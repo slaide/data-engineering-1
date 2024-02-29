@@ -13,14 +13,12 @@ services:
     networks:
       - spark_intranet
     deploy:
-      replicas: 1
+      replicas: 2
   sparkdriver:
     build: "./sparkdriver"
     depends_on:
-      - sparkworker
+      - sparkmaster
     networks:
       - spark_intranet
-    deploy:
-      replicas: 1
 networks:
   spark_intranet:
