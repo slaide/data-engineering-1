@@ -1,0 +1,26 @@
+version: "3"
+services:
+  sparkmaster: 
+    build: "./spark_master"
+    expose:
+      - "7077" # indicate that this service is listening on this port, exposing it to other services
+    networks:
+      - spark_intranet
+  sparkworker:
+    build: "./spark_worker"
+    depends_on:
+      - sparkmaster
+    networks:
+      - spark_intranet
+    deploy:
+      replicas: 1
+  sparkdriver:
+    build: "./sparkdriver"
+    depends_on:
+      - sparkworker
+    networks:
+      - spark_intranet
+    deploy:
+      replicas: 1
+networks:
+  spark_intranet:
