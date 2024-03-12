@@ -1,5 +1,5 @@
-bash install_docker.sh
-bash install_aws.sh
+bash install-docker.sh
+bash install-aws.sh
 
 docker-compose -d up localstack-s3-docker-compose.yaml
 
