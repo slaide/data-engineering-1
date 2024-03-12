@@ -1,0 +1,60 @@
+version: "3.8"
+
+services:
+  s3:
+    image: localstack/localstack:s3-latest
+    restart: always
+    networks:
+      - intranet
+    ports:
+      - "4566:4566"
+    environment:
+      - DEBUG=${DEBUG:-0}
+      - SERVICES=s3
+      - DEFAULT_REGION=us-east-1
+      - EDGE_PORT=4566
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+  db:
+    image: mariadb:11.3
+    restart: always
+    networks:
+      - intranet
+    ports:
+      - "3306:3306"
+    environment:
+      - MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1
+
+  taskq:
+    image: rabbitmq:3.12-alpine
+    restart: always
+    networks:
+      - intranet
+    ports:
+      - "5672:5672"
+
+  dbwatcher:
+    # placeholder, this should actually run a script, not just the empty python runtime
+    image: python:3.12-alpine
+    restart: always
+    networks:
+      - intranet
+
+  cpworker:
+    # placeholder, this should actually run a script, not just the empty python runtime
+    image: python:3.12-alpine
+    restart: always
+    networks:
+      - intranet
+
+  reducer:
+    # placeholder, this should actually run a script, not just the empty python runtime
+    image: python:3.12-alpine
+    restart: always
+    networks:
+      - intranet
+
+networks:
+  intranet:
