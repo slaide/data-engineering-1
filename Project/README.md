@@ -24,14 +24,24 @@ the documentation for mariadb+docker is [here](https://hub.docker.com/_/mariadb)
 
 the task queue is managed by _rabbitmq_. it offers an api for many implementation languages, python being one, which I will be using. there is also an official docker image [here](https://hub.docker.com/_/rabbitmq).
 
-## db query script
+## scripts
 
-I will be using _python_ as a scripting language. There are also official docker [images](https://hub.docker.com/_/python) available to run python inside a well-defined environment, for which i will chose alpine linux and python 3.12.
+For any custom scripting, I will be using _python_. _celery_ is a python framework that allows RPC (Remote Procedure Calling) via rabbitmq. I will combine this with pure python and pythons ability to launch shell commands to run cellprofiler and the reducer task through an opaque scalable RPC service. There is an official docker [image](https://hub.docker.com/_/python) available to run python inside a well-defined environment, for which i will chose alpine linux and python 3.12. celery will be installed as a pypi package inside this container.
 
-## workers
+### database watcher
 
-the _cellprofiler_ workers will be running via python as well. _celery_ is a python framework built on top of rabbitmq, so I will that on top of python. The celery docs are [here](https://docs.celeryq.dev/en/stable/).
+The database will be queried for new images stored in the object storage, that have not been processed yet (i.e. do not have an annotation in the database regarding this). When a full set of images (all relevant imaging channels) of an imaging site have been submitted, a celery task will run a cellprofiler pipeline on these images. the results will then be written back to the object storage and database. after this task is done, the watcher will check if all image sets of the same plate have been processed, and if so, will (also through celery) reduce the concatenated tabular results from across the plate into a single plot (also stored in object storage+database), which can be queried by an end-user at any point. docs for python+mariadb are [here](https://mariadb.com/resources/blog/how-to-connect-python-programs-to-mariadb/).
 
-## reducers
+### workers
 
-the service to _reduce_ the cellprofiler outputs into plots (or whatever) will also be written in python. this service will consume tasks from the rabbitmq task queue, so it will also use celery.
+the _cellprofiler_ workers will expose a celery task that takes a number of inputs:
+1. a set of images, one per imaging channel (of the same imaging site on the same plate)
+1. a cellprofiler pipeline to apply to these images
+and one output:
+1. the references to the result files
+
+cellprofiler batch mode (i.e. 'run pre-configured pipeline headless') docs are [here](https://cellprofiler-manual.s3.amazonaws.com/CellProfiler-4.0.5/help/other_batch.html).
+
+### reducers
+
+the service to _reduce_ the cellprofiler outputs into plots (or whatever) will also be written in python and exposed as a celery task. the input is the identifier of the plate, which is then used to query all result files from the object storage. these files will be concatenated and processed into a result plot (using python libraries). a reference to this plot is then returned through celery as result of this task.

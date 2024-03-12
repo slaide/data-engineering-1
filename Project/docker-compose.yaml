@@ -36,22 +36,19 @@ services:
       - "5672:5672"
 
   dbwatcher:
-    # placeholder, this should actually run a script, not just the empty python runtime
-    image: python:3.12-alpine
+    build: "./dbwatcher"
     restart: always
     networks:
       - intranet
 
   cpworker:
-    # placeholder, this should actually run a script, not just the empty python runtime
-    image: python:3.12-alpine
+    build: "./cpworker"
     restart: always
     networks:
       - intranet
 
-  reducer:
-    # placeholder, this should actually run a script, not just the empty python runtime
-    image: python:3.12-alpine
+  cpreducer:
+    build: "./cpreducer"
     restart: always
     networks:
       - intranet

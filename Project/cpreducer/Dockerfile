@@ -4,6 +4,6 @@ RUN <<EOF
 python3 -m pip install --upgrade pip setuptools
 python3 -m pip install celery
 
-python3 -m pip install mariadb
+python3 -m pip install polars scipy pandas numpy
 EOF
 RUN celery -A tasks worker --loglevel=INFO
