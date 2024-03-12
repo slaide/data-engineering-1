@@ -11,4 +11,4 @@ curl -o wxpython.whl https://extras.wxpython.org/wxPython4/extras/linux/gtk3/roc
 pip3 install wxpython.whl
 pip3 install cellprofiler==4.2.6
 EOF
-RUN celery -A tasks worker --loglevel=INFO
+RUN python -m celery -A tasks worker --loglevel=INFO

@@ -6,4 +6,4 @@ python3 -m pip install celery
 
 python3 -m pip install mariadb
 EOF
-RUN celery -A tasks worker --loglevel=INFO
+RUN python -m celery -A tasks worker --loglevel=INFO
