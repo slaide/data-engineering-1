@@ -10,6 +10,10 @@ the database query script will also look for cellprofiler result files, and when
 
 below are the software solutions I have chosen for this project.
 
+## container and orchestration
+
+I am using docker for containerization, and docker swarm for orchestration. dockerfile docs are [here](https://docs.docker.com/reference/dockerfile/). docker-compose documentation is [here](https://docs.docker.com/compose/compose-file/). docker swarm docs are [here](https://docs.docker.com/engine/swarm/).
+
 ## object storage:
 
 the object storage solution chosen for this project is _localstack_, which offers local object storage. localstack offers local versions of all aws components, and official docker [images](https://hub.docker.com/r/localstack/localstack) are available as well. there are also images containing only specific aws components, like s3, which is what we are using here (hence we are using the s3-localstack docker image). the documentation for localstack s3 is [here](https://docs.localstack.cloud/user-guide/aws/s3/).
