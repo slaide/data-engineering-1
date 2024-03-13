@@ -10,4 +10,5 @@ RUN python3 -m pip install mariadb
 COPY dbwatcher_tasks.py dbwatcher_tasks.py
 COPY cpreducer_tasks.py cpreducer_tasks.py
 COPY cpworker_tasks.py cpworker_tasks.py
-RUN python3 dbwatcher_tasks.py
+
+CMD python3 dbwatcher_tasks.py
