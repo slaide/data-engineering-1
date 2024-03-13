@@ -36,19 +36,25 @@ services:
       - "5672:5672"
 
   dbwatcher:
-    build: "./dbwatcher"
+    build:
+      context: script_workers
+      dockerfile: dbwatcher.Dockerfile
     restart: always
     networks:
       - intranet
 
   cpworker:
-    build: "./cpworker"
+    build:
+      context: script_workers
+      dockerfile: cpworker.Dockerfile
     restart: always
     networks:
       - intranet
 
   cpreducer:
-    build: "./cpreducer"
+    build:
+      context: script_workers
+      dockerfile: cpreducer.Dockerfile
     restart: always
     networks:
       - intranet
