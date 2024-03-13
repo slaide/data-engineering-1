@@ -1,7 +1,7 @@
 FROM python:3.12-alpine
 
 RUN apk --no-cache add bash gcc musl-dev g++ gfortran linux-headers make
-RUN apk --no-cache add mariadb-connector-c-dev
+RUN apk --no-cache add mariadb-connector-c-dev mariadb-dev
 
 RUN python3 -m pip install --upgrade pip setuptools
 RUN python3 -m pip install celery tqdm
