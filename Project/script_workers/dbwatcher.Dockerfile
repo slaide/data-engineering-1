@@ -14,8 +14,9 @@ ENV py3=venv/bin/python3
 RUN $py3 -m pip install --upgrade pip
 RUN $py3 -m pip install celery tqdm mariadb
 
-COPY dbwatcher_tasks.py dbwatcher_tasks.py
-COPY cpreducer_tasks.py cpreducer_tasks.py
-COPY cpworker_tasks.py cpworker_tasks.py
+COPY tasks.py tasks.py
+COPY dbwatcher.py dbwatcher.py
 
-CMD $py3 dbwatcher_tasks.py
+ENV PYTHONUNBUFFERED=1
+
+CMD $py3 dbwatcher.py

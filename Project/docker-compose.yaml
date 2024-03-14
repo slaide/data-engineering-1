@@ -28,36 +28,53 @@ services:
       - MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1
 
   taskq:
-    image: rabbitmq:3.12-alpine
+    build:
+      context: rabbitmq
+      dockerfile: rabbitmq.Dockerfile
     restart: always
     networks:
       - intranet
     ports:
       - "5672:5672"
+    environment:
+      RABBITMQ_DEFAULT_USER: "guest"
+      RABBITMQ_DEFAULT_PASS: "guestpw"
 
   dbwatcher:
     build:
       context: script_workers
       dockerfile: dbwatcher.Dockerfile
     restart: always
+    depends_on:
+      - taskq
     networks:
       - intranet
+    environment:
+      APP_BROKER_URI: "amqp://guest:guestpw@taskq"
 
-  cpworker:
+  cpmapper:
     build:
       context: script_workers
-      dockerfile: cpworker.Dockerfile
+      dockerfile: cpmapper.Dockerfile
     restart: always
+    depends_on:
+      - taskq
     networks:
       - intranet
+    environment:
+      APP_BROKER_URI: "amqp://guest:guestpw@taskq"
 
   cpreducer:
     build:
       context: script_workers
       dockerfile: cpreducer.Dockerfile
     restart: always
+    depends_on:
+      - taskq
     networks:
       - intranet
+    environment:
+      APP_BROKER_URI: "amqp://guest:guestpw@taskq"
 
 networks:
   intranet:

@@ -30,7 +30,7 @@ the task queue is managed by _rabbitmq_. it offers an api for many implementatio
 
 ## scripts
 
-For any custom scripting, I will be using _python_. _celery_ is a python framework that allows RPC (Remote Procedure Calling) via rabbitmq. I will combine this with pure python and pythons ability to launch shell commands to run cellprofiler and the reducer task through an opaque scalable RPC service. There is an official docker [image](https://hub.docker.com/_/python) available to run python inside a well-defined environment, for which i will chose alpine linux and python 3.12. celery will be installed as a pypi package inside this container.
+For any custom scripting, I will be using _python_. _celery_ is a python framework that allows RPC (Remote Procedure Calling) via rabbitmq, with documentation [here](https://docs.celeryq.dev/en/stable/). I will combine this with pure python and pythons ability to launch shell commands to run cellprofiler and the reducer task through an opaque scalable RPC service. There is an official docker [image](https://hub.docker.com/_/python) available to run python inside a well-defined environment, for which i will chose alpine linux and python 3.12. celery will be installed as a pypi package inside this container.
 
 ### database watcher
 

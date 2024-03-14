@@ -24,6 +24,7 @@ ENV py3=venv/bin/python3
 RUN $py3 -m pip install --upgrade pip
 RUN $py3 -m pip install polars celery matplotlib numpy "pandas>=1.5.3,<1.6" scipy
 
-COPY cpreducer_tasks.py cpreducer_tasks.py
+COPY tasks.py tasks.py
 
-CMD $py3 -m celery -A cpreducer_tasks worker --loglevel=INFO
+CMD $py3 -m celery -A tasks worker --queues=reduce_queue
+# --loglevel=INFO

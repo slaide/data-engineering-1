@@ -24,6 +24,7 @@ RUN TOOLCHAIN_DIR=$(find /usr/lib/jvm -mindepth 1 -maxdepth 1 -name 'java-17-ope
 RUN $py3 -m pip install celery matplotlib numpy
 RUN $py3 -m pip install mariadb "Cython<3.0" cellprofiler==4.2.6
 
-COPY cpworker_tasks.py cpworker_tasks.py
+COPY tasks.py tasks.py
 
-CMD $py3 -m celery -A cpworker_tasks worker --loglevel=INFO
+CMD $py3 -m celery -A tasks worker --queues=map_queue
+# --loglevel=INFO
