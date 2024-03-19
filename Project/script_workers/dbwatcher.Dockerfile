@@ -1,7 +1,6 @@
 FROM python:3.12-bookworm
 
 RUN apt update
-RUN apt upgrade -fy
 RUN apt install -fy bash gcc g++ gfortran make cmake wget
 RUN apt install -fy libmariadb-dev
 # used by some numerical libraries
