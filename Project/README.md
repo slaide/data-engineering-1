@@ -24,10 +24,6 @@ the sql database used here is _mariadb_. there is an official docker image which
 
 the documentation for mariadb+docker is [here](https://hub.docker.com/_/mariadb).
 
-other useful sql resources:
-1. avoid purely text based sql queries with [sqlalchemy core](https://docs.sqlalchemy.org/en/20/core/connections.html)
-1. sqlalchemy [error docs](https://docs.sqlalchemy.org/en/20/errors.html)
-
 ## task queue
 
 the task queue is managed by _rabbitmq_. it offers an api for many implementation languages, python being one, which I will be using. there is also an official docker image [here](https://hub.docker.com/_/rabbitmq).
@@ -39,6 +35,11 @@ For any custom scripting, I will be using _python_. _celery_ is a python framewo
 ### database watcher
 
 The database will be queried for new images stored in the object storage, that have not been processed yet (i.e. do not have an annotation in the database regarding this). When a full set of images (all relevant imaging channels) of an imaging site have been submitted, a celery task will run a cellprofiler pipeline on these images. the results will then be written back to the object storage and database. after this task is done, the watcher will check if all image sets of the same plate have been processed, and if so, will (also through celery) reduce the concatenated tabular results from across the plate into a single plot (also stored in object storage+database), which can be queried by an end-user at any point. docs for python+mariadb are [here](https://mariadb.com/resources/blog/how-to-connect-python-programs-to-mariadb/).
+
+useful sql query resources:
+1. avoid purely text based sql queries with [sqlalchemy core](https://docs.sqlalchemy.org/en/20/core/connections.html)
+1. sqlalchemy [error docs](https://docs.sqlalchemy.org/en/20/errors.html)
+1. use pandas dataframe library for structured database data insert/retrieve operations, see [docs](https://pandas.pydata.org/docs/reference/api/pandas.read_sql.html#pandas.read_sql)
 
 ### workers
 
