@@ -19,4 +19,8 @@ COPY dbwatcher.py dbwatcher.py
 
 ENV PYTHONUNBUFFERED=1
 
+# switch to non-root user
+RUN useradd -m dbwatcher
+USER dbwatcher
+
 CMD $py3 dbwatcher.py

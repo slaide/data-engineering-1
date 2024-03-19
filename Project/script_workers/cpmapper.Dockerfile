@@ -26,5 +26,9 @@ RUN $py3 -m pip install mariadb "Cython<3.0" cellprofiler==4.2.6
 
 COPY tasks.py tasks.py
 
+# switch to non-root user
+RUN useradd -m celeryworker
+USER celeryworker
+
 CMD $py3 -m celery -A tasks worker --queues=map_queue
 # --loglevel=INFO

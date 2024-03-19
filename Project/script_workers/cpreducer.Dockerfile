@@ -26,5 +26,9 @@ RUN $py3 -m pip install polars celery matplotlib numpy "pandas>=1.5.3,<1.6" scip
 
 COPY tasks.py tasks.py
 
+# switch to non-root user
+RUN useradd -m celeryworker
+USER celeryworker
+
 CMD $py3 -m celery -A tasks worker --queues=reduce_queue
 # --loglevel=INFO
