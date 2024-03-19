@@ -21,7 +21,8 @@ RUN TOOLCHAIN_DIR=$(find /usr/lib/jvm -mindepth 1 -maxdepth 1 -name 'java-17-ope
     ln -s $TOOLCHAIN_DIR $JAVA_HOME
 
 RUN $py3 -m pip install celery matplotlib numpy
-RUN $py3 -m pip install mariadb "Cython<3.0" cellprofiler==4.2.6
+# numpy needs to already be installed before cellprofiler gets installed
+RUN $py3 -m pip install mariadb SQLAlchemy==2.0.22 "Cython<3.0" cellprofiler==4.2.6
 
 COPY tasks.py tasks.py
 
