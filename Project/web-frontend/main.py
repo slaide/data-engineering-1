@@ -4,6 +4,7 @@ from pathlib import Path
 from flask import Flask, request, redirect, url_for, send_from_directory, jsonify, render_template
 from werkzeug.utils import secure_filename
 from pathlib import Path
+import typing as tp
 
 UPLOAD_FOLDER = './uploads'
 STATIC_FILE_DIR = './static'
@@ -22,11 +23,11 @@ def filenameIsAllowed(filename:str|Path)->bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
 @app.route('/static/<name>')
-def serveStaticFile(name:str)->any:
+def serveStaticFile(name:str)->tp.Any:
     return send_from_directory(app.config["STATIC_FILE_DIR"], name)
 
 @app.route('/uploads/<name>')
-def serveUpladedFile(name:str)->any:
+def serveUpladedFile(name:str)->tp.Any:
     return send_from_directory(app.config["UPLOAD_FOLDER"], name)
 
 @app.route("/",methods=["GET"])
@@ -34,7 +35,7 @@ def serveHome():
     return render_template("home.html"),Status.OK
 
 @app.route('/api/upload', methods=['POST'])
-def uploadFile()->(str,int):
+def uploadFile()->tp.Tuple[str,int]:
     # check if the post request has the file part
     if len(request.files)==0:
         return jsonify({"error":"no files provided"}),Status.BAD_REQUEST
