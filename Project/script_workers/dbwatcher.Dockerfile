@@ -11,7 +11,7 @@ RUN virtualenv venv
 ENV py3=venv/bin/python3
 
 RUN $py3 -m pip install --upgrade pip
-RUN $py3 -m pip install celery tqdm mariadb
+RUN $py3 -m pip install celery tqdm pandas mariadb SQLAlchemy==2.0.22 mysql-connector-python
 
 COPY tasks.py tasks.py
 COPY dbwatcher.py dbwatcher.py
