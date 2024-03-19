@@ -24,6 +24,10 @@ the sql database used here is _mariadb_. there is an official docker image which
 
 the documentation for mariadb+docker is [here](https://hub.docker.com/_/mariadb).
 
+other useful sql resources:
+1. avoid purely text based sql queries with [sqlalchemy core](https://docs.sqlalchemy.org/en/20/core/connections.html)
+1. sqlalchemy [error docs](https://docs.sqlalchemy.org/en/20/errors.html)
+
 ## task queue
 
 the task queue is managed by _rabbitmq_. it offers an api for many implementation languages, python being one, which I will be using. there is also an official docker image [here](https://hub.docker.com/_/rabbitmq).
@@ -49,3 +53,12 @@ cellprofiler batch mode (i.e. 'run pre-configured pipeline headless') docs are [
 ### reducers
 
 the service to _reduce_ the cellprofiler outputs into plots (or whatever) will also be written in python and exposed as a celery task. the input is the identifier of the plate, which is then used to query all result files from the object storage. these files will be concatenated and processed into a result plot (using python libraries). a reference to this plot is then returned through celery as result of this task.
+
+### ingest web server
+
+ingesting new files and requests for project results are made through a web server with a frontend. the server is implemented using the [flask](https://pypi.org/project/Flask/) framework.
+
+useful links:
+1. flask framework [docs](https://flask.palletsprojects.com/en/3.0.x/)
+1. flask file uploads [docs](https://flask.palletsprojects.com/en/2.3.x/patterns/fileuploads/)
+1. the objectively best web dev docs in the world: [mdn](https://developer.mozilla.org/en-US/)
