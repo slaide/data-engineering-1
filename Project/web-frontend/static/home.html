@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head>
+	<meta charset="utf-8">
+    <title>Upload new File</title>
+	<link rel="icon" href="/static/favicon.png">
+</head>
+<body>
+    <iframe id="dummyframe" name="dummyframe" style="display:none;"></iframe>
+    <h1>Upload new File</h1>
+    <style>
+        .uploadStatusText{
+            padding-left:2em;
+        }
+        #uploadProgressDisplay{
+            display:grid;
+            grid-template-columns:auto 1fr;
+        }
+    </style>
+    <script>
+        class MultiRequest{
+            constructor(){
+                this.requests_pending=[]
+                this.num_requests_finished=0
+            }
+            add(req,body=null){
+                this.requests_pending.push([req,body])
+            }
+            send(){
+                for(const [req,body] of this.requests_pending){
+                    req.send(body)
+                }
+            }
+            finishRequest(req){
+                if(!req)
+                    return
+
+                let index=-1
+                for(let [i,[req_p,_]] of this.requests_pending.entries()){
+                    if(req===req_p){
+                        index=i
+                        break
+                    }
+                }
+                if(index==-1){
+                    return
+                }
+                this.requests_pending.splice(index,1)
+
+                this.num_requests_finished+=1
+            }
+        }
+        function uploadFiles(event){
+			event.preventDefault()
+			event.currentTarget.parentElement.reportValidity()
+
+            let uploadProgressDisplay=document.getElementById("uploadProgressDisplay")
+            let imageFileTarget=document.getElementById("imageFileSelection")
+            let imageCoordinateFileTarget=document.getElementById("imageCoordinateFile")
+            let experimentInformationFileTarget=document.getElementById("experimentInformationFile")
+
+			if(imageFileTarget.files.length=0)
+				window.alert("no image files");
+            if(imageCoordinateFileTarget.files.length==0)
+                window.alert("no coordinate file");
+            if(experimentInformationFileTarget.files.length==0)
+                window.alert("no metadata file");
+
+            while(uploadProgressDisplay.firstChild){
+                uploadProgressDisplay.removeChild(uploadProgressDisplay.firstChild)
+            }
+
+            let numFiles=imageFileTarget.files.length+2/*metadata file and coordinate file*/
+
+            let formData = new FormData();
+            for(let imagefile of imageFileTarget.files)
+                formData.append('image_files', imagefile);
+            for(let imagefile of experimentInformationFileTarget.files)
+                formData.append('experiment_file', imagefile);
+            for(let imagefile of imageCoordinateFileTarget.files)
+                formData.append('coordinate_file', imagefile);
+
+            let req=new XMLHttpRequest()
+            req.open('POST', '/api/upload', true);
+
+            let newElement=document.createElement("div")
+            newElement.innerText="somefiles"
+            uploadProgressDisplay.appendChild(newElement)
+
+            let statusElement=document.createElement("t")
+            statusElement.classList.add("uploadStatusText")
+            statusElement.innerText="uploading.."
+            uploadProgressDisplay.appendChild(statusElement)
+
+            req.onabort=()=>{
+                console.log("request aborted")
+                statusElement.innerText="upload aborted"
+            }
+            req.onerror=()=>{
+                console.log("request failed")
+                statusElement.innerText="upload error"
+            }
+            req.onload=(function(){
+                if(!(this.readyState === 4 && this.status === 200)){
+                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                    return
+                }
+
+                let response=JSON.parse(req.responseText)
+                statusElement.innerHTML="upload of "+response.files.length+" files done"
+            }).bind(req)
+
+            req.upload.onprogress = function(event) {
+                if (event.lengthComputable) {
+                    var percentComplete = (event.loaded / event.total) * 100;
+                    statusElement.innerHTML="upload of "+numFiles+" files "+percentComplete.toFixed(2)+"% done"
+                }
+            };
+
+            req.send(formData)
+        }
+    </script>
+
+    <style>
+        #inputform{
+            display:grid;
+            grid-template-columns: auto 1fr;
+        }
+    </style>
+    <form id="inputform">
+        <label for="imageFileSelection">image files</label>
+        <input id="imageFileSelection" type="file" name="images" required multiple accept=".tif,.tiff,.png">
+        <label for="imageCoordinateFile">image coordinate file</label>
+        <input id="imageCoordinateFile" type="file" name="coordinates" required accept=".csv">
+        <label for="experimentInformationFile">experiment metadata file</label>
+        <input id="experimentInformationFile" type="file" name="metadata" required accept=".json">
+        <input id="submitExperimentButton" type="submit" value="Upload" onclick="uploadFiles(event)">
+    </form>
+
+    <div id="uploadProgressDisplay"></div>
+</body>
+</html>

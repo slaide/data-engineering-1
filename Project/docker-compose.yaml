@@ -11,8 +11,7 @@ services:
     environment:
       - DEBUG=${DEBUG:-0}
       - SERVICES=s3
-      - DEFAULT_REGION=us-east-1
-      - EDGE_PORT=4566
+      - GATEWAY_LISTEN=4566
     volumes:
       - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
       - "/var/run/docker.sock:/var/run/docker.sock"
@@ -40,33 +39,24 @@ services:
       RABBITMQ_DEFAULT_USER: "guest"
       RABBITMQ_DEFAULT_PASS: "guestpw"
 
-  dbwatcher:
-    build:
-      context: script_workers
-      dockerfile: dbwatcher.Dockerfile
-    restart: always
-    depends_on:
-      - taskq
-    networks:
-      - intranet
-    environment:
-      APP_BROKER_URI: "amqp://guest:guestpw@taskq"
-      MARIADB_USER_USERNAME: "root"
-      MARIADB_USER_PASSWORD: ""
-      MARIADB_HOSTNAME: "db"
-      MARIADB_PORT: "3306"
-
   webfrontend:
     build:
       context: web-frontend
-      dockerfile: Dockerfile
+      dockerfile: webserver.Dockerfile
     restart: always
+    depends_on:
+      - taskq
     networks:
       - intranet
     ports:
       - "8080:80"
     environment:
       WEB_FRONTEND_PORT: "80"
+      APP_BROKER_URI: "amqp://guest:guestpw@taskq"
+      MARIADB_USER_USERNAME: "root"
+      MARIADB_USER_PASSWORD: ""
+      MARIADB_HOSTNAME: "db"
+      MARIADB_PORT: "3306"
 
   cpmapper:
     build:

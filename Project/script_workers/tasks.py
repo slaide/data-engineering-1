@@ -10,3 +10,4 @@ def cp_map(file_list:[str])->[str]:
 @app.task(queue="reduce_queue")
 def cp_reduce(image_list:[str])->[str]:
     return [f"{i}.res" for i in image_list]
+
