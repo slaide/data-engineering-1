@@ -18,6 +18,8 @@ I am using docker for containerization, and docker swarm for orchestration. dock
 
 the object storage solution chosen for this project is _localstack_, which offers local object storage. localstack offers local versions of all aws components, and official docker [images](https://hub.docker.com/r/localstack/localstack) are available as well. there are also images containing only specific aws components, like s3, which is what we are using here (hence we are using the s3-localstack docker image). the documentation for localstack s3 is [here](https://docs.localstack.cloud/user-guide/aws/s3/).
 
+a good python api for interaction with s3 is [boto3](https://github.com/boto/boto3), with docs available via [aws boto3 docs](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-example-download-file.html).
+
 ## sql database:
 
 the sql database used here is _mariadb_. there is an official docker image which I will be using here.
@@ -32,7 +34,7 @@ the task queue is managed by _rabbitmq_. it offers an api for many implementatio
 
 For any custom scripting, I will be using _python_. _celery_ is a python framework that allows RPC (Remote Procedure Calling) via rabbitmq, with documentation [here](https://docs.celeryq.dev/en/stable/). I will combine this with pure python and pythons ability to launch shell commands to run cellprofiler and the reducer task through an opaque scalable RPC service. There is an official docker [image](https://hub.docker.com/_/python) available to run python inside a well-defined environment, for which i will chose alpine linux and python 3.12. celery will be installed as a pypi package inside this container.
 
-### database watcher
+### ingest front end + database watcher
 
 The database will be queried for new images stored in the object storage, that have not been processed yet (i.e. do not have an annotation in the database regarding this). When a full set of images (all relevant imaging channels) of an imaging site have been submitted, a celery task will run a cellprofiler pipeline on these images. the results will then be written back to the object storage and database. after this task is done, the watcher will check if all image sets of the same plate have been processed, and if so, will (also through celery) reduce the concatenated tabular results from across the plate into a single plot (also stored in object storage+database), which can be queried by an end-user at any point. docs for python+mariadb are [here](https://mariadb.com/resources/blog/how-to-connect-python-programs-to-mariadb/).
 
@@ -40,6 +42,13 @@ useful sql query resources:
 1. avoid purely text based sql queries with [sqlalchemy core](https://docs.sqlalchemy.org/en/20/core/connections.html)
 1. sqlalchemy [error docs](https://docs.sqlalchemy.org/en/20/errors.html)
 1. use pandas dataframe library for structured database data insert/retrieve operations, see [docs](https://pandas.pydata.org/docs/reference/api/pandas.read_sql.html#pandas.read_sql)
+
+ingesting new files and requests for project results are made through a web server with a frontend. the server is implemented using the [flask](https://pypi.org/project/Flask/) framework.
+
+useful links:
+1. flask framework [docs](https://flask.palletsprojects.com/en/3.0.x/)
+1. flask file uploads [docs](https://flask.palletsprojects.com/en/2.3.x/patterns/fileuploads/)
+1. the objectively best web dev docs in the world: [mdn](https://developer.mozilla.org/en-US/)
 
 ### workers
 
@@ -49,17 +58,8 @@ the _cellprofiler_ workers will expose a celery task that takes a number of inpu
 and one output:
 1. the references to the result files
 
-cellprofiler batch mode (i.e. 'run pre-configured pipeline headless') docs are [here](https://cellprofiler-manual.s3.amazonaws.com/CellProfiler-4.0.5/help/other_batch.html).
+cellprofiler batch mode (i.e. 'run pre-configured pipeline headless') docs are [here](https://cellprofiler-manual.s3.amazonaws.com/CellProfiler-4.0.5/help/other_batch.html), and cli docs are [here](https://github.com/CellProfiler/CellProfiler/wiki/Adapting-CellProfiler-to-a-LIMS-environment#write).
 
 ### reducers
 
 the service to _reduce_ the cellprofiler outputs into plots (or whatever) will also be written in python and exposed as a celery task. the input is the identifier of the plate, which is then used to query all result files from the object storage. these files will be concatenated and processed into a result plot (using python libraries). a reference to this plot is then returned through celery as result of this task.
-
-### ingest web server
-
-ingesting new files and requests for project results are made through a web server with a frontend. the server is implemented using the [flask](https://pypi.org/project/Flask/) framework.
-
-useful links:
-1. flask framework [docs](https://flask.palletsprojects.com/en/3.0.x/)
-1. flask file uploads [docs](https://flask.palletsprojects.com/en/2.3.x/patterns/fileuploads/)
-1. the objectively best web dev docs in the world: [mdn](https://developer.mozilla.org/en-US/)
