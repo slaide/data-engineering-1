@@ -1,7 +1,7 @@
 FROM python:3.12-bookworm
 
 RUN apt update
-RUN apt install -fy bash gcc g++ gfortran make cmake wget
+RUN apt install -fy bash gcc g++ gfortran make cmake wget micro tree
 RUN apt install -fy libmariadb-dev
 # used by some numerical libraries
 RUN apt install -fy libopenblas-dev 
@@ -21,7 +21,7 @@ RUN virtualenv venv
 ENV py3=venv/bin/python3
 
 RUN $py3 -m pip install --upgrade pip
-RUN $py3 -m pip install polars celery matplotlib numpy "pandas>=1.5.3,<1.6" scipy
+RUN $py3 -m pip install polars pandas pyarrow celery matplotlib numpy "pandas>=1.5.3,<1.6" scipy tqdm mariadb SQLAlchemy==2.0.22 mysql-connector-python boto3
 
 COPY tasks.py tasks.py
 

@@ -73,6 +73,11 @@ services:
       MARIADB_USER_PASSWORD: ""
       MARIADB_HOSTNAME: "db"
       MARIADB_PORT: "3306"
+      S3_HOSTNAME: "s3"
+      S3_PORT: "4566"
+      S3_ACCESS_KEY_ID: "test"
+      S3_SECRET_ACCESS_KEY: "test"
+      S3_BUCKET_NAME: mybucket
 
   cpmapper:
     build:
@@ -89,6 +94,11 @@ services:
       - intranet
     environment:
       APP_BROKER_URI: "amqp://guest:guestpw@taskq"
+      S3_HOSTNAME: "s3"
+      S3_PORT: "4566"
+      S3_ACCESS_KEY_ID: "test"
+      S3_SECRET_ACCESS_KEY: "test"
+      S3_BUCKET_NAME: mybucket
 
   cpreducer:
     build:
@@ -105,6 +115,11 @@ services:
       - intranet
     environment:
       APP_BROKER_URI: "amqp://guest:guestpw@taskq"
+      S3_HOSTNAME: "s3"
+      S3_PORT: "4566"
+      S3_ACCESS_KEY_ID: "test"
+      S3_SECRET_ACCESS_KEY: "test"
+      S3_BUCKET_NAME: mybucket
 
 networks:
   intranet:

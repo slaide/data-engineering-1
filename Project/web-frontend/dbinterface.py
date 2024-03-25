@@ -8,11 +8,91 @@ from sqlalchemy.sql.expression import Insert, Select
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
+from werkzeug.datastructures import FileStorage
 import re
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
+from botocore.client import Config
+from werkzeug.utils import secure_filename
 
 # setting limits to none to display all columns
 pd.set_option('display.width', None)
 pd.set_option('display.max_columns', None)
+pd.set_option('display.max_colwidth', None)
+
+BUCKET_NAME=os.getenv("S3_BUCKET_NAME")
+
+s3_client = boto3.client('s3', 
+                            endpoint_url=f'http://{os.getenv("S3_HOSTNAME")}:{int(os.getenv("S3_PORT"))}',
+                            aws_access_key_id=os.getenv("S3_ACCESS_KEY_ID"),
+                            aws_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY"),
+                            config=Config(signature_version='s3v4'),
+                            use_ssl=False,  # Disable SSL
+                            verify=False)  # Disable SSL certificate verification
+
+def ensure_s3_bucket(bucket_name:str, region=None)->bool:
+    """
+    Create an S3 bucket in a specified region. If no region is specified, the bucket
+    is created in the S3 default region (us-east-1).
+
+    :param bucket_name: Bucket to create
+    :param region: String region to create bucket in, e.g., 'us-west-2'
+    :return: True if bucket created, False is bucket already existed
+    """
+    
+    # Check if the bucket already exists
+    try:
+        s3_client.head_bucket(Bucket=bucket_name)
+        return False
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == '404':
+            # The bucket does not exist, create it
+            try:
+                if region is None:
+                    s3_client.create_bucket(Bucket=bucket_name)
+                else:
+                    location = {'LocationConstraint': region}
+                    s3_client.create_bucket(Bucket=bucket_name,
+                                            CreateBucketConfiguration=location)
+
+                return True
+            except ClientError as e:
+                print(f"Failed to create bucket: {e}")
+                raise RuntimeError(f"Failed to create bucket: {e}")
+        else:
+            print(f"Failed to check bucket existence: {e}")
+            raise RuntimeError(f"Failed to check bucket existence: {e}")
+
+
+def upload_file_to_s3_localstack(
+    file:tp.Union[str,FileStorage], 
+    bucket:str, 
+    object_name:str
+)->bool:
+    """
+    Uploads a file to the specified S3 bucket on LocalStack
+
+    :param file_name: File to upload
+    :param bucket: Bucket to upload to
+    :param object_name: S3 object name. If not specified, file_name is used
+    :return: True if file was uploaded, else False
+    """
+
+    ensure_s3_bucket(bucket)
+
+    try:
+        if isinstance(file, str):
+            s3_client.upload_file(file, bucket, object_name)
+        elif isinstance(file, FileStorage):
+            s3_client.upload_fileobj(file, bucket, object_name)
+        else:
+            raise ValueError(f"file must be either a string or a FileStorage object, not {type(file)}")
+    except NoCredentialsError:
+        print("Credentials not available")
+        return False
+    return True
+
 
 DBNAME="morphology_information"
 
@@ -32,6 +112,7 @@ dbProjects=Table(
 dbPlates=Table(
     "plates", dbmetadata,
     Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+    Column("platetypeid",Integer,ForeignKey("plate_types.id",ondelete="cascade"),nullable=False),
     Column("barcode",Text,nullable=False),
 )
 # this table contains all experiments
@@ -101,6 +182,7 @@ dbExperimentWells=Table(
     Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
     Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
     Column("wellid",Integer,ForeignKey("platetype_wells.id",ondelete="cascade"),nullable=False),
+    Column("cell_line",Text,nullable=True),
 )
 # this table contains a list of all imaging channels used in an experiment (i.e. each row contains a reference to an experiment, and to an imaging channel, including imaging channel specific information, i.e. exposure time, analog gain, illumination strength)
 dbExperimentImagingChannels=Table(
@@ -108,6 +190,7 @@ dbExperimentImagingChannels=Table(
     Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
     Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
     Column("channelid",Integer,ForeignKey("imaging_channels.id",ondelete="cascade"),nullable=False),
+    Column("imaging_order_index",Integer,nullable=False),
     Column("exposure_time_ms",Float,nullable=False),
     Column("analog_gain",Float,nullable=False),
     Column("illumination_strength",Float,nullable=False),
@@ -138,8 +221,8 @@ dbImages=Table(
     Column("site_x",Integer,nullable=False),
     Column("site_y",Integer,nullable=False),
     Column("site_z",Integer,nullable=False),
-    Column("site_t_h",Integer,nullable=False),
-    Column("channelid",Integer,ForeignKey("imaging_channels.id",ondelete="cascade"),nullable=False),
+    Column("site_t",Integer,nullable=False),
+    Column("experimentchannelid",Integer,ForeignKey("experiment_imaging_channels.id",ondelete="cascade"),nullable=False),
     Column("coord_x_mm",Float,nullable=True),
     Column("coord_y_mm",Float,nullable=True),
     Column("coord_z_um",Float,nullable=True),
@@ -149,26 +232,49 @@ dbImages=Table(
 # deconstruct image naming scheme to get image metadata...
 @dataclass(repr=True,frozen=False)
 class ImageMetadata:
-    image_pathname:str
+    storage_filename:tp.Optional[str]
+    real_filename:str
     wellname:str
     well_id:int
     site:int
     site_x:int
     site_y:int
     site_z:int
+    site_t:int
     channelname:str
     channel_id:int
+    coord_x_mm:float
+    coord_y_mm:float
+    coord_z_um:float
+    coord_t:datetime
+    
+    def __init__(self,
+        real_filename:str,
+        storage_filename:str,
+        coords:tp.Dict[str,any],
+        db:"DB"
+    ):
+        """
+            params:
 
-    def __init__(self,image:str,db:"DB"):
+                real_filename:
+                    the filename of the image, as it came out of the microscope
+                    (full path, not just the filename, i.e. '/path/to/image/filename')
+
+                storage_filename:
+                    the filename of the image, as it is stored in the object storage
+                    (includes bucket name, i.e. 'bucketname/filename')
+
+            notes:
+                image name: 
+                    example: B03_s1_x0_y0_Fluorescence_405_nm_Ex.tif
+                    format: <wellname>_s<site>_x<site_x>_y<site_y>[_z<site_z>]_<channelname>_Ex.tif
         """
-            image name: 
-                example: B03_s1_x0_y0_Fluorescence_405_nm_Ex.tif
-                format: <wellname>_s<site>_x<site_x>_y<site_y>[_z<site_z>]_<channelname>_Ex.tif
-        """
-        self.image_pathname=image
+        self.real_filename=real_filename
+        self.storage_filename=storage_filename
 
         # image may be nested path, we only want the filename without the extension
-        image_path=Path(image).stem
+        image_path=Path(real_filename).stem
 
         # unsure how best to get all the metadata from the image name, since splitting by _ is not enough (channel name can contain _)
         # so we will use a regex to extract the metadata
@@ -208,8 +314,20 @@ class ImageMetadata:
         self.site_x=site_x
         self.site_y=site_y
         self.site_z=site_z
+        # TODO site_t is based off of filepath, not just the name (if experiment.grid_config.t.N>1, then site_t is the name of the parent folder)
+        self.site_t=1
         self.channelname=channelname
         self.channel_id=channel_id
+        if coords is not None:
+            self.coord_x_mm=coords["x_mm"]
+            self.coord_y_mm=coords["y_mm"]
+            self.coord_z_um=coords["z_um"]
+            self.coord_t=coords["t"]
+        else:
+            self.coord_x_mm=None
+            self.coord_y_mm=None
+            self.coord_z_um=None
+            self.coord_t=None
 
 
 class DB:
@@ -254,6 +372,8 @@ class DB:
 
             if as_pd:
                 return pd.DataFrame(key_list,columns=res.keys())
+            else:
+                return key_list
         
         # for other cases, return whatever the result is
         return res
@@ -351,71 +471,181 @@ class DB:
         
         return registered_task_names.issuperset(task_names)
 
-    def run(self):
-        def insertImageSet(projectName:str,plateName:str,images:tp.List[str]):
-            res=self.dbExec(dbProjects.insert(),{"name":projectName})
-            [(projectid,)]=res
+    def insertExperimentMetadata(self,
+        experiment:dict,
+        coordinates:pd.DataFrame,
+        images:tp.List[FileStorage],
+        image_s3_bucketname:str,
+    )->tp.List[ImageMetadata]:
 
-            self.dbExec(dbPlates.insert().prefix_with("ignore"),[
-                {"projectid":projectid, "barcode":plateName},
-                {"projectid":projectid, "barcode":plateName},
-            ])
+        # create experiment if none exists with the name
+        proj_name:str=experiment["project_name"]
+        res=self.dbExec(f"select id from projects where name='{proj_name}';")
+        if len(res)==0:
+            self.dbExec(dbProjects.insert(),{"name":proj_name})
+        proj_id:int=self.dbExec(f"select id from projects where name='{proj_name}';")[0][0]
 
-            if len(images)==0:
-                return
+        # get plate type id, throw if it does not exist
+        plate_type_name:str=experiment["plate_type"]
+        res=self.dbExec(f"select id from plate_types where model_name='{plate_type_name}';")
+        if len(res)==0:
+            raise ValueError(f"plate type {plate_type_name} not found in database")
+        plate_type_id:int=res[0][0]
+
+        # create plate if none exists with the barcode
+        plate_name:str=experiment["plate_name"]
+        res=self.dbExec(f"select id from plates where barcode='{plate_name}';")
+        if len(res)==0:
+            self.dbExec(dbPlates.insert().prefix_with("ignore"),{"projectid":proj_id,"platetypeid":plate_type_id,"barcode":plate_name})
+        plate_id:int=self.dbExec(f"select id from plates where barcode='{plate_name}';")[0][0]
+
+        # get microscope id, and create it if it does not exist
+        microscope_name:str=experiment["microscope_name"]
+        res=self.dbExec(f"select id from microscopes where name='{microscope_name}';")
+        if len(res)==0:
+            self.dbExec(dbMicroscopes.insert(),{"name":microscope_name})
+        microscope_id:int=self.dbExec(f"select id from microscopes where name='{microscope_name}';")[0][0]
+
+        # get objective id, and create it if it does not exist
+        objective_name:str=experiment["objective"]
+        res=self.dbExec(f"select id from objectives where name='{objective_name}';")
+        if len(res)==0:
+            self.dbExec(dbObjectives.insert(),{"name":objective_name})
+        objective_id:int=self.dbExec(f"select id from objectives where name='{objective_name}';")[0][0]
+
+        # create experiment
+        exp_name=experiment["experiment_name"]
+        exp_start_time=datetime.strptime(experiment["timestamp"], "%Y-%m-%d_%H.%M.%S")
+
+        # ideally this code would detect the unit and then convert to the correct unit for the database
+        # but it is hardcoded because i have to draw the line for this project somewhere
+        grid_delta_x_unit:str=experiment["grid_config"]["x"]["unit"]
+        assert grid_delta_x_unit=="mm", grid_delta_x_unit
+        grid_delta_y_unit:str=experiment["grid_config"]["y"]["unit"]
+        assert grid_delta_y_unit=="mm", grid_delta_y_unit
+        grid_delta_z_unit:str=experiment["grid_config"]["z"]["unit"]
+        assert grid_delta_z_unit=="mm", grid_delta_z_unit
+        grid_delta_t_unit:str=experiment["grid_config"]["t"]["unit"]
+        assert grid_delta_t_unit=="s", grid_delta_t_unit
+
+        res=self.dbExec(dbExperiments.insert(),{
+            "projectid":proj_id,
+            "name":exp_name,
+            "start_time":exp_start_time,
+            # descriptions are currently not implemented in metadata files
+            # but would be nice to have at some point
+            "description":None,
+            "plateid":plate_id,
+            "microscopeid":microscope_id,
+            "objectiveid":objective_id,
+            "num_images_x":experiment["grid_config"]["x"]["N"],
+            "num_images_y":experiment["grid_config"]["y"]["N"],
+            "num_images_z":experiment["grid_config"]["z"]["N"],
+            "num_images_t":experiment["grid_config"]["t"]["N"],
+            "delta_x_mm":experiment["grid_config"]["x"]["d"],
+            "delta_y_mm":experiment["grid_config"]["y"]["d"],
+            # convert from mm (in metadata file) to um (in database)
+            "delta_z_um":experiment["grid_config"]["z"]["d"]*1e3,
+            # convert from seconds (in metadata file) to hours (in database)
+            "delta_t_h":experiment["grid_config"]["t"]["d"]/3600,
+        })
+        exp_id:int=res[0][0]
+
+        cell_line:str=experiment["cell_line"]
+
+        # create experiment wells
+        for wellname in experiment["well_list"]:
+            res=self.dbExec(f"select id from platetype_wells where well_name='{wellname}' and platetypeid={plate_type_id};")
+            if len(res)==0:
+                raise ValueError(f"well name {wellname} not found in database")
+            well_id=res[0][0]
+
+            self.dbExec(dbExperimentWells.insert(),{"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line})
+
+        imaging_channel_ids={}
+
+        # create experiment imaging channels
+        for channel_imaging_order_index,channel in enumerate(experiment["channels_ordered"]):
+            current_channel_config=None
+            for channel_config in experiment["channels_config"]:
+                if channel_config["Name"]==channel:
+                    current_channel_config=channel_config
+                    break
+            assert current_channel_config is not None, f"channel {channel} not found in experiment config"
+
+            # get channel id
+            res=self.dbExec(f"select id from imaging_channels where name='{channel}';")
+            if len(res)==0:
+                raise ValueError(f"channel name {channel} not found in database")
             
-            projectid=self.dbExec(f"select id from projects where name='{projectName}';")[0][0]
-            plateid=self.dbExec(f"select id from plates where barcode='{plateName}';")[0][0]
+            channel_id:int=res[0][0]
 
-            images=[ImageMetadata(image) for image in images]
+            res=self.dbExec(dbExperimentImagingChannels.insert(),{
+                "experimentid":exp_id,
+                "channelid":channel_id,
+                "imaging_order_index":channel_imaging_order_index,
+                "exposure_time_ms":current_channel_config["ExposureTime"],
+                "analog_gain":current_channel_config["AnalogGain"],
+                "illumination_strength":current_channel_config["IlluminationIntensity"],
+            })
+            experiment_channel_id=res[0][0]
 
-            res=self.dbExec(dbImages.insert(),[
-                {
-                    "plateid":plateid,
-                    "s3path":image.image_pathname,
-                    "wellid":image.well_id,
-                    
-                    "channelid":image.channel_id,
+            imaging_channel_ids[channel]=experiment_channel_id
 
-                    "site_x":image.site_x,
-                    "site_y":image.site_y,
-                    "site_z":image.site_z,
-                    "site_t_h":1,
+        print(f"{plate_id = }")
 
-                    "coord_x_mm":11.4,
-                    "coord_y_mm":12.3,
-                    "coord_z_um":1631.7,
-                    "coord_t":datetime.now(),
-                }
-                for image
-                in images
-            ])
-            assert len(res)==len(images)
+        # insert image metadata
+        imageInsertionList=[]
+        imageMetadataList=[]
+        for file in images:
+            # If the user does not select a file, the browser may submit an empty file without a filename.
+            if file.filename == '':
+                raise ValueError("No selected file (empty filename)")
 
-            for row in self.dbExec("select * from images;"):
-                print(row)
+            sec_filename = secure_filename(Path(file.filename).name)
+            save_filepath=os.path.join(experiment["project_name"],experiment["experiment_name"],sec_filename)
 
-        insertImageSet(projectName="testproject",plateName="testplate",images=[
-            "A02_s1_x1_y1_Fluorescence_405_nm_Ex.tif",
-            "B03_s1_x0_y0_Fluorescence_488_nm_Ex.tif",
-            "D03_s1_x0_y0_Fluorescence_730_nm_Ex.tif",
-            "F12_s1_x0_y0_Fluorescence_638_nm_Ex.tif",
-        ])
+            savePathInclBucket=f"{image_s3_bucketname}/{save_filepath}"
+            
+            # forward file to s3 storage
+            success=upload_file_to_s3_localstack(file,image_s3_bucketname,save_filepath)
+            assert success, f"uploading {save_filepath} to bucket {image_s3_bucketname} failed with {success}"
 
-        if False:
-            while not self.checkTasksRegistered([cp_map.name,cp_reduce.name]):
-                print("not ready. sleeping...")
-                time.sleep(5)
+            image_metadata=ImageMetadata(
+                real_filename=file.filename,
+                storage_filename=savePathInclBucket,
+                coords=None,
+                db=self
+            )
+            imageMetadataList.append(image_metadata)
 
-            while(1):
-                a_result=cp_map.delay([
-                    "/mnt/squid/project/plate/A02_s1_x1_y1_Fluorescence_405_nm_Ex.tif",
-                    "/mnt/squid/project/plate/B03_s1_x0_y0_Fluorescence_488_nm_Ex.tif",
-                    "/mnt/squid/project/plate/D03_s1_x0_y0_Fluorescence_730_nm_Ex.tif",
-                    "/mnt/squid/project/plate/F12_s1_x0_y0_Fluorescence_638_nm_Ex.tif",
-                ]).get()
-                print(f"mapping with cellprofiler done")
-                b_result=cp_reduce.delay(a_result).get()
-                print(f"reducing of cellprofiler results done")
+            imageInsertionList.append({
+                "plateid":plate_id,
+                "s3path":savePathInclBucket,
+                "wellid":image_metadata.well_id,
+                "site_x":image_metadata.site_x,
+                "site_y":image_metadata.site_y,
+                "site_z":image_metadata.site_z,
+                "site_t":image_metadata.site_t,
+                "experimentchannelid":imaging_channel_ids[image_metadata.channelname],
+                "coord_x_mm":image_metadata.coord_x_mm,
+                "coord_y_mm":image_metadata.coord_y_mm,
+                "coord_z_um":image_metadata.coord_z_um,
+                "coord_t":image_metadata.coord_t,
+            })
 
-                time.sleep(1)
+        print(f"inserting {len(imageMetadataList)} images")
+        self.dbExec(dbImages.insert(),imageInsertionList)
+        
+        self.dumpDatabaseHead()
+
+        return imageMetadataList
+
+
+    def dumpDatabaseHead(self,n:int=5):
+        # print forst 5 rows of each table, if they exist
+        for table in dbmetadata.tables.values():
+            res=self.dbExec(f"select * from {table.name} limit {n};",as_pd=True)
+            if res is not None:
+                print(table.name,res,sep="\n")
+

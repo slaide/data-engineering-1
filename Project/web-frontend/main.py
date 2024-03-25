@@ -1,23 +1,22 @@
 import os
 from http import HTTPStatus as Status
 from pathlib import Path
-from flask import Flask, request, redirect, url_for, send_from_directory, jsonify, make_response, Response
+from flask import Flask, request, redirect, url_for, send_from_directory, jsonify, make_response, Response, stream_with_context
 from werkzeug.utils import secure_filename
 from pathlib import Path
 import typing as tp
 import pandas as pd
 import json
+import io
 
-from dbinterface import DB, ImageMetadata
+from dbinterface import DB, BUCKET_NAME, s3_client
 
-UPLOAD_FOLDER = './uploads'
 STATIC_FILE_DIR = './static'
 ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff', '.csv', '.json'}
 
 mydb=DB()
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['STATIC_FILE_DIR'] = STATIC_FILE_DIR
 # limit max upload file size (will raise an exception if exceeded)
 # app.config['MAX_CONTENT_LENGTH'] = 16 * 1000 * 1000
@@ -46,9 +45,6 @@ def read_file(dirname:str,filename:str)->str:
         return content
 
 
-if not Path(app.config['UPLOAD_FOLDER']).exists():
-    Path(app.config['UPLOAD_FOLDER']).mkdir()
-
 def filenameIsAllowed(filename:str|Path)->bool:
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
@@ -76,13 +72,26 @@ def serveStaticFile(name:str)->tp.Tuple[Response,Status]:
     response.headers["Content-Type"]=mimetype
     return response,Status.OK
 
-@app.route('/uploads/<name>')
-def serveUpladedFile(name:str)->tp.Any:
-    return send_from_directory(app.config["UPLOAD_FOLDER"], name)
+@app.route('/download/<bucket>/<path:filename>')
+def download_file(bucket, filename):
+    def generate_file():
+        with io.BytesIO() as file_stream:
+            s3_client.download_fileobj(Bucket=bucket, Key=filename, Fileobj=file_stream)
+            file_stream.seek(0)  # Go to the beginning of the file-like object
+            while chunk := file_stream.read(4096):  # Read in chunks of 4KB
+                yield chunk
+
+    response = Response(stream_with_context(generate_file()), content_type='application/octet-stream')
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    return response
 
 @app.route("/",methods=["GET"])
 def serveHome():
     return serveStaticFile("home.html")
+
+def cp_map(*args,**kwargs)->tp.Any:
+    res=mydb.celery.send_task("cp_map",args=args,kwargs=kwargs,queue="map_queue")
+    return res
 
 @app.route('/api/upload', methods=['POST'])
 def uploadFile()->tp.Tuple[str,int]:
@@ -90,61 +99,48 @@ def uploadFile()->tp.Tuple[str,int]:
     if len(request.files)==0:
         return jsonify({"error":"no files provided"}),Status.BAD_REQUEST
 
-    files_uploaded=[]
+    coordinates=pd.read_csv(request.files["coordinate_file"])
+    # print(coordinates.head(5))
 
-    file_sets={}
-
-    # type(request.files)==werkzeug.MultiDict[key=str,value=werkzeug.FileStorage]
-    #    see https://tedboy.github.io/flask/generated/generated/werkzeug.MultiDict.html
-    for inputname,files in request.files.lists():
-        if inputname not in file_sets:
-            file_sets[inputname]=[]
-
-        for file in files:
-            # If the user does not select a file, the browser may submit an empty file without a filename.
-            if file.filename == '':
-                return jsonify({"error":"empty filename"}),Status.BAD_REQUEST
-
-            file_is_valid=file is not None # and filenameIsAllowed(file.filename)
-
-            if file_is_valid:
-                sec_filename = secure_filename(file.filename)
-                save_filepath=os.path.join(app.config['UPLOAD_FOLDER'], sec_filename)
-                file.save(save_filepath)
-                files_uploaded.append((file.filename,save_filepath,file_is_valid))
-
-                file_sets[inputname].append((file.filename,save_filepath))
-            else:
-                files_uploaded.append((file.filename,None,file_is_valid))
-
-    # inputname: image_files filename: G11_s3_x0_y1_Fluorescence_488_nm_Ex.tiff
-    coordinates=pd.read_csv(file_sets["coordinate_file"][0][1])
-    print(coordinates.head(5))
-    with Path(file_sets["experiment_file"][0][1]).open("r") as f:
-        experiment=json.load(f)
+    experiment=json.load(request.files["experiment_file"])
     # print pretty formatted experiment metadata
     print(json.dumps(experiment,indent=4))
-    print("got {} images".format(len(file_sets["image_files"])))
-    for filename,filepath in file_sets["image_files"][:5]:
-        metadata=ImageMetadata(
-            image=filename,
-            db=mydb,
-        )
-        print(filename,repr(metadata))
+    experiment["experiment_name"]=Path(experiment["output_path"]).name
 
+    imageFileList=mydb.insertExperimentMetadata(
+        experiment,
+        coordinates,
+        images=request.files.getlist("image_files"),
+        image_s3_bucketname=BUCKET_NAME
+    )
+
+    res=cp_map(
+        [
+            dict(
+                filename=Path(image.real_filename).name,
+                s3path=image.storage_filename,
+            )
+            for image
+            in imageFileList
+        ],
+        project_name=experiment["project_name"],
+        plate_name=experiment["plate_name"],
+        imageBatchID=0,
+    )
+    print(res.get())
 
     # redirect to display last uploaded file
     return jsonify(dict(
-                files=[
-                    dict(
-                        filename=filename,
-                        url=save_filepath,
-                        success=success,
-                    )
-                    for (filename,save_filepath,success)
-                    in files_uploaded
-                ]
-            ))
+        info="success",
+        imagefiles=[
+            {
+                "filename":image.real_filename,
+                "downloadpath":f"/download/{image.storage_filename}"
+            }
+            for image
+            in imageFileList
+        ],
+    )),Status.OK
 
 print("Running web frontend on port",os.getenv("WEB_FRONTEND_PORT"))
 app.run(debug=True,host="0.0.0.0",port=os.getenv("WEB_FRONTEND_PORT"))

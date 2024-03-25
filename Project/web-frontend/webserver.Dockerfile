@@ -13,8 +13,7 @@ RUN virtualenv venv
 ENV py3=venv/bin/python3
 
 RUN $py3 -m pip install --upgrade pip
-RUN $py3 -m pip install celery tqdm pandas numpy flask==3.0.2 werkzeug \
-                        mariadb SQLAlchemy==2.0.22 mysql-connector-python
+RUN $py3 -m pip install celery tqdm pandas pyarrow numpy flask==3.0.2 werkzeug mariadb SQLAlchemy==2.0.22 mysql-connector-python boto3
 
 COPY . /app/
 
@@ -22,6 +21,6 @@ ENV PYTHONUNBUFFERED=1
 
 # switch to non-root user
 RUN useradd -m webfrontend
-#USER webfrontend
+USER webfrontend
 
 CMD $py3 main.py

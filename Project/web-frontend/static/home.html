@@ -107,7 +107,13 @@
                 }
 
                 let response=JSON.parse(req.responseText)
-                statusElement.innerHTML="upload of "+response.files.length+" files done"
+                let downloadstr=""
+                for(let imagefileresult of response.imagefiles){
+                    let downloadpath=imagefileresult.downloadpath
+                    let filename=imagefileresult.filename
+                    downloadstr+="<a href='"+downloadpath+"'>download "+filename+"</a><br>"
+                }
+                statusElement.innerHTML="upload of "+numFiles+" files done, with msg: "+response.info+"<br>"+downloadstr
             }).bind(req)
 
             req.upload.onprogress = function(event) {
