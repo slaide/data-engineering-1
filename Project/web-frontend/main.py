@@ -1,18 +1,18 @@
 import os
 from http import HTTPStatus as Status
 from pathlib import Path
-from flask import Flask, request, redirect, url_for, send_from_directory, jsonify, make_response, Response, stream_with_context
-from werkzeug.utils import secure_filename
+from flask import Flask, request, jsonify, make_response, Response, stream_with_context
 from pathlib import Path
 import typing as tp
 import pandas as pd
 import json
 import io
+from dataclasses import dataclass
 
-from dbinterface import DB, BUCKET_NAME, s3_client
+from celery.result import AsyncResult
+from dbi import DB, BUCKET_NAME, s3_client, Result_cp_map, ObjectStorageFileReference
 
 STATIC_FILE_DIR = './static'
-ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff', '.csv', '.json'}
 
 mydb=DB()
 
@@ -21,9 +21,14 @@ app.config['STATIC_FILE_DIR'] = STATIC_FILE_DIR
 # limit max upload file size (will raise an exception if exceeded)
 # app.config['MAX_CONTENT_LENGTH'] = 16 * 1000 * 1000
 
-cached_files:tp.Dict[str,'{"content":str,"timestamp":int}']={}
+@dataclass
+class CachedFileInformation:
+    content:tp.Union[bytes,str]
+    timestamp:float
 
-def read_file(dirname:str,filename:str)->str:
+cached_files:tp.Dict[str,CachedFileInformation]={}
+
+def read_file(dirname:str,filename:str)->tp.Tuple[tp.Union[str,bytes],Status]:
     """ if file is in cached_files and its timestamp does not match the timestamp of the file, read the file again and save the new timestamp """
 
     full_file_path=Path(dirname)/filename
@@ -36,17 +41,14 @@ def read_file(dirname:str,filename:str)->str:
     # disable caching for now, seems to not work right
     if filename in cached_files:
         cached_file=cached_files[filename]
-        if cached_file["timestamp"]==file_timestamp:
-            return cached_file["content"]
+        if cached_file.timestamp==file_timestamp:
+            return cached_file.content,Status.OK
         
     with full_file_path.open("rb") as f:
         content=f.read()
-        cached_files[filename]={"content":content,"timestamp":file_timestamp}
-        return content
+        cached_files[filename]=CachedFileInformation(content=content,timestamp=file_timestamp)
+        return content,Status.OK
 
-
-def filenameIsAllowed(filename:str|Path)->bool:
-    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
 def get_file_mimetype(filename:str)->str:
     switcher={
@@ -89,23 +91,50 @@ def download_file(bucket, filename):
 def serveHome():
     return serveStaticFile("home.html")
 
-def cp_map(*args,**kwargs)->tp.Any:
-    res=mydb.celery.send_task("cp_map",args=args,kwargs=kwargs,queue="map_queue")
-    return res
+class cp_map:
+    """ wrapper for RPC call to celery task cp_map """
+    def __init__(self,*args,**kwargs):
+        res=mydb.celery.send_task("cp_map",args=args,kwargs=kwargs,queue="map_queue")
+        self.celeryResult:AsyncResult=res
+
+    def __getattr__(self, item):
+        """ only called if the item was not found in the object, so no manual check for .get() is needed """
+        return getattr(self._async_result, item)
+
+    def get(self,*args,**kwargs)->Result_cp_map:
+        """ get the result of the celery task """
+        res=self.celeryResult.get(*args,**kwargs)
+        assert type(res)==dict, type(res)
+        return Result_cp_map(**res)
+
+
+@app.route("/api/get_projects",methods=["GET"])
+def getProjectNames():
+    projectnames:dict=mydb.getProjectNames().__dict__
+    return jsonify(projectnames),Status.OK
+
+@app.route("/api/get_experiments",methods=["GET"])
+def getExperiments():
+    projectname=request.args.get("projectname",type=str)
+    assert projectname is not None
+    experiments:dict=mydb.getExperiments(projectname=projectname).__dict__
+    return jsonify(experiments),Status.OK
 
 @app.route('/api/upload', methods=['POST'])
-def uploadFile()->tp.Tuple[str,int]:
+def uploadFile():
     # check if the post request has the file part
     if len(request.files)==0:
         return jsonify({"error":"no files provided"}),Status.BAD_REQUEST
 
-    coordinates=pd.read_csv(request.files["coordinate_file"])
-    # print(coordinates.head(5))
+    coordinate_file=request.files.get("coordinate_file")
+    assert coordinate_file is not None
+    coordinates=pd.read_csv(coordinate_file.stream)
 
-    experiment=json.load(request.files["experiment_file"])
-    # print pretty formatted experiment metadata
-    print(json.dumps(experiment,indent=4))
-    experiment["experiment_name"]=Path(experiment["output_path"]).name
+    experiment_file=request.files.get("experiment_file")
+    assert experiment_file is not None
+    experiment=json.load(experiment_file.stream)
+    experiment_name=Path(experiment["output_path"]).name
+    experiment["experiment_name"]=experiment_name
 
     imageFileList=mydb.insertExperimentMetadata(
         experiment,
@@ -114,20 +143,50 @@ def uploadFile()->tp.Tuple[str,int]:
         image_s3_bucketname=BUCKET_NAME
     )
 
+    batch_id=mydb.getProcessingBatchID(experiment["project_name"],experiment_name)
+
     res=cp_map(
         [
-            dict(
+            ObjectStorageFileReference(
                 filename=Path(image.real_filename).name,
                 s3path=image.storage_filename,
-            )
+            ).model_dump()
             for image
             in imageFileList
         ],
         project_name=experiment["project_name"],
         plate_name=experiment["plate_name"],
-        imageBatchID=0,
+        imageBatchID=batch_id,
     )
-    print(res.get())
+    res=res.get()
+    print(res)
+
+    # write result stuff back to db
+
+    mydb.insertProfileResultBatch(
+        experiment["project_name"],
+        experiment_name=experiment_name,
+        batchid=batch_id,
+        result_file_paths=res.resultfiles,
+        well_site_list=res.wells,
+    )
+
+    status=mydb.checkExperimentProcessingStatus(experiment["project_name"],experiment_name,get_merged_frames=True)
+
+    total_sites=0
+    num_processed_sites=0
+    for well,sites in status.wells.items():
+        for site,c in sites.items():
+            total_sites+=1
+            num_processed_sites+=c
+
+    print(f"Total sites: {total_sites}, Processed sites: {num_processed_sites}, i.e. done {num_processed_sites/total_sites*100:.2f}%")
+
+    for filename,df in status.resultfiles.items():
+        print(filename)
+        print(df)
+
+    mydb.dumpDatabaseHead()
 
     # redirect to display last uploaded file
     return jsonify(dict(
@@ -143,4 +202,5 @@ def uploadFile()->tp.Tuple[str,int]:
     )),Status.OK
 
 print("Running web frontend on port",os.getenv("WEB_FRONTEND_PORT"))
-app.run(debug=True,host="0.0.0.0",port=os.getenv("WEB_FRONTEND_PORT"))
+_WEB_FRONTEND_PORT_ENV=os.getenv("WEB_FRONTEND_PORT") ; assert _WEB_FRONTEND_PORT_ENV is not None
+app.run(debug=True,host="0.0.0.0",port=int(_WEB_FRONTEND_PORT_ENV))

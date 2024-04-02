@@ -7,6 +7,89 @@
 </head>
 <body>
     <iframe id="dummyframe" name="dummyframe" style="display:none;"></iframe>
+
+    <script>
+        function getprojects(event){
+            event.preventDefault()
+            let req=new XMLHttpRequest()
+            req.open('GET', '/api/get_projects', true);
+            req.onload=(function(){
+                if(!(this.readyState === 4 && this.status === 200)){
+                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                    return
+                }
+
+                let response=JSON.parse(req.responseText)
+
+                let projectlist=response.projects
+
+                let projectliststr=""
+                for(let project of projectlist){
+                    projectliststr+="<li>"+project+"</li>"
+                }
+
+                let projectlistelement=document.createElement("ul")
+                projectlistelement.innerHTML=projectliststr
+
+                let projectlistcontainer=document.getElementById("projectlist")
+
+                while(projectlistcontainer.firstChild){
+                    projectlistcontainer.removeChild(projectlistcontainer.firstChild)
+                }
+
+                projectlistcontainer.appendChild(projectlistelement)
+
+            }).bind(req)
+            req.send()
+        }
+    </script>
+    <form>
+        <input type="submit" value="get projects" onclick="getprojects(event)">
+    </form>
+    <div id="projectlist"></div>
+
+    <script>
+        function getexperiments(event){
+            event.preventDefault()
+            let projectname=document.getElementById("projectname").value
+            let req=new XMLHttpRequest()
+            req.open('GET', '/api/get_experiments?projectname='+projectname, true);
+            req.onload=(function(){
+                if(!(this.readyState === 4 && this.status === 200)){
+                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                    return
+                }
+
+                let response=JSON.parse(req.responseText)
+
+                let experimentlist=response.experiments
+
+                let experimentliststr=""
+                for(let experiment of experimentlist){
+                    experimentliststr+="<li>"+experiment+"</li>"
+                }
+
+                let experimentlistelement=document.createElement("ul")
+                experimentlistelement.innerHTML=experimentliststr
+
+                let experimentlistcontainer=document.getElementById("experimentlist")
+
+                while(experimentlistcontainer.firstChild){
+                    experimentlistcontainer.removeChild(experimentlistcontainer.firstChild)
+                }
+
+                experimentlistcontainer.appendChild(experimentlistelement)
+
+            }).bind(req)
+            req.send()
+        }
+    </script>
+    <form>
+        <input type="text" id="projectname" name="projectname" placeholder="projectname">
+        <input type="submit" value="get experiments" onclick="getexperiments(event)">
+    </form>
+    <div id="experimentlist"></div>
+
     <h1>Upload new File</h1>
     <style>
         .uploadStatusText{
@@ -18,38 +101,6 @@
         }
     </style>
     <script>
-        class MultiRequest{
-            constructor(){
-                this.requests_pending=[]
-                this.num_requests_finished=0
-            }
-            add(req,body=null){
-                this.requests_pending.push([req,body])
-            }
-            send(){
-                for(const [req,body] of this.requests_pending){
-                    req.send(body)
-                }
-            }
-            finishRequest(req){
-                if(!req)
-                    return
-
-                let index=-1
-                for(let [i,[req_p,_]] of this.requests_pending.entries()){
-                    if(req===req_p){
-                        index=i
-                        break
-                    }
-                }
-                if(index==-1){
-                    return
-                }
-                this.requests_pending.splice(index,1)
-
-                this.num_requests_finished+=1
-            }
-        }
         function uploadFiles(event){
 			event.preventDefault()
 			event.currentTarget.parentElement.reportValidity()
