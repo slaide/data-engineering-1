@@ -39,5 +39,5 @@ RUN mkdir -p /home/pharmbio/cellprofileroutput
 # switch to non-root user
 # USER pharmbio
 
-CMD $py3 -m celery -A tasks worker --queues=map_queue
+CMD $py3 -m celery -A tasks worker --queues=map_queue --concurrency=1
 # --loglevel=INFO

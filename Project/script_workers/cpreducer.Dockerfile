@@ -29,5 +29,5 @@ COPY tasks.py tasks.py
 RUN useradd -m celeryworker
 USER celeryworker
 
-CMD $py3 -m celery -A tasks worker --queues=reduce_queue
+CMD $py3 -m celery -A tasks worker --queues=reduce_queue --concurrency=1
 # --loglevel=INFO
