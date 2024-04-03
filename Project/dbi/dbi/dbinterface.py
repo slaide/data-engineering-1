@@ -614,8 +614,8 @@ class DB:
         # check if there is an experiment in this project already in the database:
         res=self.dbExec(f"select id from experiments where name='{exp_name}' and projectid={proj_id};")
         assert type(res)==list
-        project_already_exists:bool=len(res)>0
-        if project_already_exists:
+        experiment_already_exists:bool=len(res)>0
+        if experiment_already_exists:
             print(f"info - experiment {exp_name} in project {proj_name} already exists in database")
 
         # ideally this code would detect the unit and then convert to the correct unit for the database
@@ -634,7 +634,7 @@ class DB:
         grid_num_z=int(experiment["grid_config"]["z"]["N"])
         grid_num_t=int(experiment["grid_config"]["t"]["N"])
 
-        if project_already_exists:
+        if experiment_already_exists:
             exp_id=self.getExperimentID(proj_id,exp_name)
         else:
             exp_start_time=datetime.strptime(experiment["timestamp"], "%Y-%m-%d_%H.%M.%S")
@@ -675,7 +675,7 @@ class DB:
 
             num_sites=grid_num_x*grid_num_y*grid_num_z
 
-            if not project_already_exists:
+            if not experiment_already_exists:
                 self.dbExec(self.dbExperimentWells.insert(),{"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line})
 
                 for site_id in range(num_sites):
@@ -713,7 +713,7 @@ class DB:
             
             channel_id:int=res[0][0]
 
-            if project_already_exists:
+            if experiment_already_exists:
                 res=self.dbExec(f"""
                     select id from experiment_imaging_channels
                     where experimentid={exp_id} and channelid={channel_id};
