@@ -34,6 +34,14 @@ def cp_map(
 
     """
 
+    # register existence of this batch
+    mydb.registerBatch(
+        project_name=project_name,
+        experiment_name=experiment_name,
+        batchid=imageBatchID
+    )
+
+    # download files to prepare for cellprofiler ingestion
     cellprofilerInputFileListFilePath=Path("./cellprofilerinput/imagefilelist.txt")
     local_files:tp.List[Path]=[]
     with cellprofilerInputFileListFilePath.open("w+") as f:
@@ -55,9 +63,28 @@ def cp_map(
             # save image file path for later deletion
             local_files.append(local_image_filename)
 
-    # then run command below
+    experimentid=mydb.getExperimentID(project_name,experiment_name)
+
+    # update database entry for processing batch with start time and status=processing
+    mydb.dbExec(f"""
+        UPDATE profile_results
+        SET start_time=CURRENT_TIMESTAMP,
+            status='processing images'
+        WHERE experimentid={experimentid}
+        AND batchid={imageBatchID};
+    """)
+
+    # then actually run cellprofiler (and ignore exit code, for now)
     os.system("venv/bin/python3 -m cellprofiler --run-headless --run --project=cellprofilerinput/morphology_pipeline.cpproj --file-list=cellprofilerinput/imagefilelist.txt --image-directory=cellprofilerinput/ --output-directory=cellprofileroutput/ --conserve-memory True")
     
+    # update database entry for processing batch with status=uploading
+    mydb.dbExec(f"""
+        UPDATE profile_results
+        SET status='uploading results to storage'
+        WHERE experimentid={experimentid}
+        AND batchid={imageBatchID};
+    """)
+
     # delete all local files again
     for local_image_filename in local_files:
         local_image_filename.unlink()
@@ -111,7 +138,7 @@ def cp_map(
         wells=well_site_list
     )
 
-    # write result stuff back to db
+    # write result file information back to db
 
     mydb.insertProfileResultBatch(
         project_name,
@@ -121,25 +148,14 @@ def cp_map(
         well_site_list=res.wells,
     )
 
-    status=mydb.checkExperimentProcessingStatus(
-        project_name,
-        experiment_name,
-        get_merged_frames=True
-    )
-
-    print(
-        f"Total sites: {status.total_sites}, " \
-        f"Processed sites: {status.num_processed_sites}, " \
-        f"i.e. done {status.num_processed_sites/status.total_sites*100:.2f}%"
-    )
-
-    for filename,df in status.resultfiles.items():
-        print(filename)
-        print(df.head(1))
-
-    mydb.dumpDatabaseHead()
-
-    print(f"done with {project_name=}, {experiment_name=}, {plate_name=}, {imageBatchID=}")
+    # update database entry for processing batch with end time and status=done
+    mydb.dbExec(f"""
+        UPDATE profile_results
+        SET end_time=CURRENT_TIMESTAMP,
+            status='done'
+        WHERE experimentid={experimentid}
+        AND batchid={imageBatchID};
+    """)
 
 @rpc.task(name="cp_reduce",queue="reduce_queue")
 def cp_reduce(
