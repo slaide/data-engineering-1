@@ -186,35 +186,33 @@ class DB:
         if True:
             self.dbmetadata=MetaData(schema=DBNAME)
 
-            # this table contains all projects
-            # a project must have a name
-            # a project can have any number of plates and any number of experiments
             self.dbProjects:Table=Table(
                 "projects", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
                 Column("name",Text,unique=True,nullable=False),
             )
-            # this table contains all physical plates
-            # a plate must have a barcode
-            # a plate can be part of any number of experiments
+            """
+                contains all projects
+
+                a project must have a name
+
+                a project can have any number of experiments
+            """
+
             self.dbPlates:Table=Table(
                 "plates", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
                 Column("platetypeid",Integer,ForeignKey("plate_types.id",ondelete="cascade"),nullable=False),
                 Column("barcode",Text,nullable=False),
             )
-            # this table contains all experiments
-            # an experiment must belong to exactly one project
-            # an experiment must have a name
-            # an experiment can have a description
-            # an experiment involves exactly one plate
+            """
+                all physical plates (actual plates with stuff on them, used for experiments at some point)
 
-            # the experiment contains meta information, such as:
-            # - the microscope used
-            # - the objective used
-            # - the list of wells that were imaged (this information is in the experiment_wells table)
-            # - the list of imaging channels used (this information is in the experiment_imaging_channels table)
-            # - the number of images per well in x/y/z/t, and the respective distances
+                a plate must have a barcode
+
+                a plate can be part of any number of experiments
+            """
+
             self.dbExperiments:Table=Table(
                 "experiments", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
@@ -233,7 +231,28 @@ class DB:
                 Column("delta_z_um",Float,nullable=False),
                 Column("delta_t_h",Float,nullable=False),
             )
-            # this table contains a list of all plate types (manufacturers, brandnames, optional additional identifier)
+            """
+                all experiments
+
+                an experiment must:
+                - belong to exactly one project
+                - have a name
+                - use exactly one plate
+
+                an experiment can:
+                - have a description
+
+                there is also some meta information here, such as:
+                - the microscope used
+                - the objective used
+                - the number of images per well in x/y/z/t, and the respective distances
+
+                more information about an experiment is stored in other places:
+                - the list of wells that were imaged (see self.dbExperimentWells)
+                - the list of imaging channels (see self.dbExperimentImagingChannels)
+
+            """
+
             self.dbPlateTypes:Table=Table(
                 "plate_types", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
@@ -243,28 +262,46 @@ class DB:
                 Column("num_wells",Integer,nullable=False),
                 Column("other_info",Text,nullable=True),
             )
-            # this table contains all wells for each plate type
-            # i.e. each row contains a reference to a plate type and the name of one well on that plate type
+            """
+                a list of all plate types, each containing information about:
+                - manufacturer
+                - brandname
+                - total number of wells
+                - optional additional information
+            """
+
             self.dbPlateTypeWells:Table=Table(
                 "platetype_wells", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
                 Column("platetypeid",Integer,ForeignKey("plate_types.id",ondelete="cascade"),nullable=False),
                 Column("well_name",Text,nullable=False),
             )
-            # this table contains a list of all microscopes
-            # each microscope has a unique name
+            """
+                all wells for each plate type
+
+                # i.e. each row contains a reference to a plate type and
+                the name of one well on that plate type
+            """
+
             self.dbMicroscopes:Table=Table(
                 "microscopes", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-                Column("name",Text,nullable=False),
+                Column("name",Text,nullable=False,unique=True),
             )
-            # this table contains a list of all available objectives
+            """
+                a list of all microscopes
+                each microscope has a unique name
+            """
+
             self.dbObjectives:Table=Table(
                 "objectives", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
                 Column("name",Text,nullable=False),
             )
-            # this table contains a list of the wells used in an experiment (i.e. each row contains a reference to an experiment, and to a well)
+            """
+                a list of all available objectives
+            """
+
             self.dbExperimentWells:Table=Table(
                 "experiment_wells", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
@@ -272,6 +309,15 @@ class DB:
                 Column("wellid",Integer,ForeignKey("platetype_wells.id",ondelete="cascade"),nullable=False),
                 Column("cell_line",Text,nullable=True),
             )
+            """
+                for an experiment, contains information about a well imaged in that experiment
+
+                i.e. this table indicates which wells are imaged in an experiment
+
+                note: it is not forbidden to have multiple entries for a well, but
+                it is not recommended
+            """
+
             self.dbExperimentWellSites:Table=Table(
                 "experiment_well_sites", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
@@ -283,7 +329,12 @@ class DB:
                 Column("site_z",Integer,nullable=True),
                 Column("site_t",Integer,nullable=True),
             )
-            # this table contains a list of all imaging channels used in an experiment (i.e. each row contains a reference to an experiment, and to an imaging channel, including imaging channel specific information, i.e. exposure time, analog gain, illumination strength)
+            """
+            for a well imaged in an experiment, contains information about a site within that well
+
+            i.e. this table may contain multiple site information entries for the same well
+            """
+
             self.dbExperimentImagingChannels:Table=Table(
                 "experiment_imaging_channels", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
@@ -294,8 +345,17 @@ class DB:
                 Column("analog_gain",Float,nullable=False),
                 Column("illumination_strength",Float,nullable=False),
             )
-            # this table contains a list of all the available imaging channels
-            # mostly for legacy reasons, each channel also has a human readable name
+            """
+                this table contains a list of all imaging channels used in an experiment
+                
+                each row contains a reference to
+                - an experiment
+                - an imaging channel, including imaging channel specific information (in another table!), like
+                    - exposure time
+                    - analog gain
+                    - illumination strength
+            """
+
             self.dbImagingChannels:Table=Table(
                 "imaging_channels", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
@@ -305,12 +365,11 @@ class DB:
                 Column("brightfield_type",Text,nullable=True),
                 Column("name",Text,nullable=True),
             )
-            # this table contains a list of all images taken
-            # each image belongs to one plate in one experiment
-            # each image is taken at a specific site (index in x/y/z/t)
-            # in a specific channel
-            # at specific coordinates (physically on the plate)
-            # and the image is stored in a specific location on the object storage (s3path)
+            """
+                contains a list of all the available imaging channels
+                mostly for legacy reasons, each channel also has a human readable name
+            """
+            
             self.dbImages:Table=Table(
                 "images", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
@@ -327,19 +386,44 @@ class DB:
                 Column("coord_z_um",Float,nullable=True),
                 Column("coord_t",DateTime,nullable=True),
             )
+            """
+                this table contains a list of all images taken.
+
+                each image belongs to one plate in one experiment
+
+                each image is taken:
+                - at a specific site (index in x/y/z/t) 
+                - in a specific channel
+                - at specific coordinates (physically, on the plate)
+
+                and the image is stored in a specific location on the object storage (s3path)
+            """
 
             self.dbProfileResults:Table=Table(
                 "profile_results", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
                 Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
                 Column("batchid",Integer,nullable=False),
+                Column("start_time",DateTime,nullable=True),
+                Column("end_time",DateTime,nullable=True),
+                Column("status",Text,nullable=True),
             )
+            """
+                contains information about a processing batch
+
+                processing batch = n sets of c images, where n>=1 and c is the number of imaging channels
+            """
+
             self.dbProfileResultBatchSites:Table=Table(
                 "profile_result_batch_sites", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
                 Column("profile_resultid",Integer,ForeignKey("profile_results.id",ondelete="cascade"),nullable=False),
                 Column("siteid",Integer,ForeignKey("experiment_well_sites.id",ondelete="cascade"),nullable=False),
             )
+            """
+                contains information about the sites that were processed in a batch
+            """
+
             self.dbProfileResultFiles:Table=Table(
                 "profile_result_files", self.dbmetadata,
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
@@ -347,6 +431,9 @@ class DB:
                 Column("s3path",Text,nullable=False),
                 Column("filename",Text,nullable=True),
             )
+            """
+                contains information about the files that were generated in a processing batch
+            """
 
         if recreate:
             dbengine=create_engine(f"mariadb+mariadbconnector://{MARIADB_USER_USERNAME}:{MARIADB_USER_PASSWORD}@{MARIADB_HOSTNAME}:{MARIADB_PORT}")
