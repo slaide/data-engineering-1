@@ -154,12 +154,19 @@ class Result_getExperiments(pyd.BaseModel):
 class Result_getProjectNames(pyd.BaseModel):
     projects:tp.List[str]
 
+class BatchStatusInformation(pyd.BaseModel):
+    batchid:int
+    start_time:tp.Optional[datetime]
+    end_time:tp.Optional[datetime]
+    status:tp.Optional[str]
+
 class Result_processingStatus(pyd.BaseModel):
     class Config:
         arbitrary_types_allowed=True
 
     wells:tp.Dict[str,tp.Dict[int,int]]
     resultfiles:tp.Dict[str,pd.DataFrame]
+    batch_information:tp.List[BatchStatusInformation]
     total_sites:int
     num_processed_sites:int
 
@@ -562,9 +569,7 @@ class DB:
         assert type(res)==list
         if len(res)==0:
             self.dbExec(self.dbProjects.insert(),{"name":proj_name})
-        res=self.dbExec(f"select id from projects where name='{proj_name}';")
-        assert type(res)==list
-        proj_id:int=res[0][0]
+        proj_id:int=self.getProjectID(proj_name)
 
         # get plate type id, throw if it does not exist
         plate_type_name:str=experiment["plate_type"]
@@ -606,111 +611,115 @@ class DB:
 
         # create experiment
         exp_name=experiment["experiment_name"]
-        exp_start_time=datetime.strptime(experiment["timestamp"], "%Y-%m-%d_%H.%M.%S")
-
-        # ideally this code would detect the unit and then convert to the correct unit for the database
-        # but it is hardcoded because i have to draw the line for this project somewhere
-        grid_delta_x_unit:str=experiment["grid_config"]["x"]["unit"]
-        assert grid_delta_x_unit=="mm", grid_delta_x_unit
-        grid_delta_y_unit:str=experiment["grid_config"]["y"]["unit"]
-        assert grid_delta_y_unit=="mm", grid_delta_y_unit
-        grid_delta_z_unit:str=experiment["grid_config"]["z"]["unit"]
-        assert grid_delta_z_unit=="mm", grid_delta_z_unit
-        grid_delta_t_unit:str=experiment["grid_config"]["t"]["unit"]
-        assert grid_delta_t_unit=="s", grid_delta_t_unit
-
-        grid_num_x=int(experiment["grid_config"]["x"]["N"])
-        grid_num_y=int(experiment["grid_config"]["y"]["N"])
-        grid_num_z=int(experiment["grid_config"]["z"]["N"])
-        grid_num_t=int(experiment["grid_config"]["t"]["N"])
-
-        res=self.dbExec(self.dbExperiments.insert(),{
-            "projectid":proj_id,
-            "name":exp_name,
-            "start_time":exp_start_time,
-            # descriptions are currently not implemented in metadata files
-            # but would be nice to have at some point
-            "description":None,
-            "plateid":plate_id,
-            "microscopeid":microscope_id,
-            "objectiveid":objective_id,
-            "num_images_x":grid_num_x,
-            "num_images_y":grid_num_y,
-            "num_images_z":grid_num_z,
-            "num_images_t":grid_num_t,
-            "delta_x_mm":experiment["grid_config"]["x"]["d"],
-            "delta_y_mm":experiment["grid_config"]["y"]["d"],
-            # convert from mm (in metadata file) to um (in database)
-            "delta_z_um":experiment["grid_config"]["z"]["d"]*1e3,
-            # convert from seconds (in metadata file) to hours (in database)
-            "delta_t_h":experiment["grid_config"]["t"]["d"]/3600,
-        })
+        # check if there is an experiment in this project already in the database:
+        res=self.dbExec(f"select id from experiments where name='{exp_name}' and projectid={proj_id};")
         assert type(res)==list
-        exp_id:int=res[0][0]
+        if len(res)>0:
+            print(f"info - experiment {exp_name} in project {proj_name} already exists in database")
+        else:
+            exp_start_time=datetime.strptime(experiment["timestamp"], "%Y-%m-%d_%H.%M.%S")
 
-        cell_line:str=experiment["cell_line"]
+            # ideally this code would detect the unit and then convert to the correct unit for the database
+            # but it is hardcoded because i have to draw the line for this project somewhere
+            grid_delta_x_unit:str=experiment["grid_config"]["x"]["unit"]
+            assert grid_delta_x_unit=="mm", grid_delta_x_unit
+            grid_delta_y_unit:str=experiment["grid_config"]["y"]["unit"]
+            assert grid_delta_y_unit=="mm", grid_delta_y_unit
+            grid_delta_z_unit:str=experiment["grid_config"]["z"]["unit"]
+            assert grid_delta_z_unit=="mm", grid_delta_z_unit
+            grid_delta_t_unit:str=experiment["grid_config"]["t"]["unit"]
+            assert grid_delta_t_unit=="s", grid_delta_t_unit
 
-        # create experiment wells
-        for wellname in experiment["well_list"]:
-            res=self.dbExec(f"select id from platetype_wells where well_name='{wellname}' and platetypeid={plate_type_id};")
-            assert type(res)==list
-            if len(res)==0:
-                raise ValueError(f"well name {wellname} not found in database")
-            well_id=res[0][0]
+            grid_num_x=int(experiment["grid_config"]["x"]["N"])
+            grid_num_y=int(experiment["grid_config"]["y"]["N"])
+            grid_num_z=int(experiment["grid_config"]["z"]["N"])
+            grid_num_t=int(experiment["grid_config"]["t"]["N"])
 
-            self.dbExec(self.dbExperimentWells.insert(),{"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line})
-
-            num_sites=grid_num_x*grid_num_y*grid_num_z
-
-            for site_id in range(num_sites):
-                site_id+=1 # sites are 1-indexed
-                site_x=site_id%grid_num_x
-                site_y=(site_id//grid_num_x)%grid_num_y
-                site_z=(site_id//(grid_num_x*grid_num_y))%grid_num_z
-                site_t=(site_id//(grid_num_x*grid_num_y*grid_num_z))%grid_num_t
-
-                self.dbExec(self.dbExperimentWellSites.insert(),{
-                    "experiment_wellid":exp_id,
-                    "site_id":site_id,
-                    "site_x":site_x,
-                    "site_y":site_y,
-                    "site_z":site_z,
-                    "site_t":site_t,
-                })
-
-        imaging_channel_ids={}
-
-        # create experiment imaging channels
-        for channel_imaging_order_index,channel in enumerate(experiment["channels_ordered"]):
-            current_channel_config=None
-            for channel_config in experiment["channels_config"]:
-                if channel_config["Name"]==channel:
-                    current_channel_config=channel_config
-                    break
-            assert current_channel_config is not None, f"channel {channel} not found in experiment config"
-
-            # get channel id
-            res=self.dbExec(f"select id from imaging_channels where name='{channel}';")
-            assert type(res)==list
-            if len(res)==0:
-                raise ValueError(f"channel name {channel} not found in database")
-            
-            channel_id:int=res[0][0]
-
-            res=self.dbExec(self.dbExperimentImagingChannels.insert(),{
-                "experimentid":exp_id,
-                "channelid":channel_id,
-                "imaging_order_index":channel_imaging_order_index,
-                "exposure_time_ms":current_channel_config["ExposureTime"],
-                "analog_gain":current_channel_config["AnalogGain"],
-                "illumination_strength":current_channel_config["IlluminationIntensity"],
+            res=self.dbExec(self.dbExperiments.insert(),{
+                "projectid":proj_id,
+                "name":exp_name,
+                "start_time":exp_start_time,
+                # descriptions are currently not implemented in metadata files
+                # but would be nice to have at some point
+                "description":None,
+                "plateid":plate_id,
+                "microscopeid":microscope_id,
+                "objectiveid":objective_id,
+                "num_images_x":grid_num_x,
+                "num_images_y":grid_num_y,
+                "num_images_z":grid_num_z,
+                "num_images_t":grid_num_t,
+                "delta_x_mm":experiment["grid_config"]["x"]["d"],
+                "delta_y_mm":experiment["grid_config"]["y"]["d"],
+                # convert from mm (in metadata file) to um (in database)
+                "delta_z_um":experiment["grid_config"]["z"]["d"]*1e3,
+                # convert from seconds (in metadata file) to hours (in database)
+                "delta_t_h":experiment["grid_config"]["t"]["d"]/3600,
             })
             assert type(res)==list
-            experiment_channel_id=res[0][0]
+            exp_id:int=res[0][0]
 
-            imaging_channel_ids[channel]=experiment_channel_id
+            cell_line:str=experiment["cell_line"]
 
-        print(f"{plate_id = }")
+            # create experiment wells
+            for wellname in experiment["well_list"]:
+                res=self.dbExec(f"select id from platetype_wells where well_name='{wellname}' and platetypeid={plate_type_id};")
+                assert type(res)==list
+                if len(res)==0:
+                    raise ValueError(f"well name {wellname} not found in database")
+                well_id=res[0][0]
+
+                self.dbExec(self.dbExperimentWells.insert(),{"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line})
+
+                num_sites=grid_num_x*grid_num_y*grid_num_z
+
+                for site_id in range(num_sites):
+                    site_id+=1 # sites are 1-indexed
+                    site_x=site_id%grid_num_x
+                    site_y=(site_id//grid_num_x)%grid_num_y
+                    site_z=(site_id//(grid_num_x*grid_num_y))%grid_num_z
+                    site_t=(site_id//(grid_num_x*grid_num_y*grid_num_z))%grid_num_t
+
+                    self.dbExec(self.dbExperimentWellSites.insert(),{
+                        "experiment_wellid":exp_id,
+                        "site_id":site_id,
+                        "site_x":site_x,
+                        "site_y":site_y,
+                        "site_z":site_z,
+                        "site_t":site_t,
+                    })
+
+            imaging_channel_ids={}
+
+            # create experiment imaging channels
+            for channel_imaging_order_index,channel in enumerate(experiment["channels_ordered"]):
+                current_channel_config=None
+                for channel_config in experiment["channels_config"]:
+                    if channel_config["Name"]==channel:
+                        current_channel_config=channel_config
+                        break
+                assert current_channel_config is not None, f"channel {channel} not found in experiment config"
+
+                # get channel id
+                res=self.dbExec(f"select id from imaging_channels where name='{channel}';")
+                assert type(res)==list
+                if len(res)==0:
+                    raise ValueError(f"channel name {channel} not found in database")
+                
+                channel_id:int=res[0][0]
+
+                res=self.dbExec(self.dbExperimentImagingChannels.insert(),{
+                    "experimentid":exp_id,
+                    "channelid":channel_id,
+                    "imaging_order_index":channel_imaging_order_index,
+                    "exposure_time_ms":current_channel_config["ExposureTime"],
+                    "analog_gain":current_channel_config["AnalogGain"],
+                    "illumination_strength":current_channel_config["IlluminationIntensity"],
+                })
+                assert type(res)==list
+                experiment_channel_id=res[0][0]
+
+                imaging_channel_ids[channel]=experiment_channel_id
 
         # insert image metadata
         imageInsertionList=[]
@@ -760,6 +769,27 @@ class DB:
 
         return imageMetadataList
     
+    def registerBatch(self,
+        project_name:str,
+        experiment_name:str,
+        batchid:int,
+        initial_status:str="registered"
+    ):
+        """
+        register a batch in the database
+        """
+
+        experiment_id=self.getExperimentID(project_name,experiment_name)
+
+        # create profile result batch
+        res=self.dbExec(self.dbProfileResults.insert(),{
+            "experimentid":experiment_id,
+            "batchid":batchid,
+            "status":initial_status,
+        })
+        assert type(res)==list
+        assert len(res)==1, len(res)
+
     def insertProfileResultBatch(self,
         project_name:str,
         experiment_name:str,
@@ -768,23 +798,15 @@ class DB:
         well_site_list:tp.List[WellSite]
     ):
         
-        self.dumpDatabaseHead()
-
-        res=self.dbExec(f"select id from projects where name='{project_name}';")
-        assert type(res)==list
-        project_id=res[0][0]
-        print(f"{project_id = }")
-        res=self.dbExec(f"select id from experiments where projectid={project_id} and name='{experiment_name}';")
-        assert type(res)==list
-        experiment_id=res[0][0]
-
-        # create profile result batch
-        res=self.dbExec(self.dbProfileResults.insert(),{
-            "experimentid":experiment_id,
-            "batchid":batchid,
-        })
-        assert type(res)==list
-        profile_result_id=res[0][0]
+        experiment_id=self.getExperimentID(project_name,experiment_name)
+        profile_result_id_res=self.dbExec(f"""
+            select id from profile_results
+            where experimentid={experiment_id}
+            and batchid={batchid};
+        """)
+        assert type(profile_result_id_res)==list
+        assert len(profile_result_id_res)==1, len(profile_result_id_res)
+        profile_result_id:int=profile_result_id_res[0][0]
 
         # write result file paths
         for result_file in result_file_paths:
@@ -821,17 +843,13 @@ class DB:
         experiment_name:str,
         get_merged_frames:bool=False,
     )->Result_processingStatus:
+        """
+        check the processing status of an experiment
+
+        inherits behaviour from getExperimentID
+        """
         
-        res=self.dbExec(f"select id from projects where name='{project_name}';")
-        assert type(res)==list
-        if len(res)==0:
-            raise ValueError(f"project {project_name} not found in database")
-        project_id=res[0][0]
-        res=self.dbExec(f"select id from experiments where projectid={project_id} and name='{experiment_name}';")
-        assert type(res)==list
-        if len(res)==0:
-            raise ValueError(f"experiment {experiment_name} not found in database")
-        experiment_id=res[0][0]
+        experiment_id=self.getExperimentID(project_name,experiment_name)
 
         # get list of wells and number of sites per well from experiment definition
         experiment=self.dbExec(f"""
@@ -843,12 +861,14 @@ class DB:
         assert len(experiment)==1, f"experiment {experiment_name} not found in database"
         experiment=experiment.iloc[0]
         num_sites=experiment["num_images_x"]*experiment["num_images_y"]*experiment["num_images_z"]*experiment["num_images_t"]
-        assert num_sites>0, f"no sites found for experiment {experiment_name}"
+        assert num_sites>0, f"no sites found for experiment {experiment_name}, which is a bug in the ingest code"
 
         # get list of well names from experiment_wells, using experimentid and wellid
         wells=self.dbExec(f"""
-            select pw.well_name from experiment_wells ew
-            join platetype_wells pw on ew.wellid=pw.id
+            select pw.well_name
+            from experiment_wells ew
+            join platetype_wells pw
+                on ew.wellid=pw.id
             where ew.experimentid={experiment_id};
         """,as_pd=True)
         assert type(wells)==pd.DataFrame
@@ -861,6 +881,7 @@ class DB:
                 for well
                 in wells
             },
+            batch_information=[],
             resultfiles={},
             total_sites=0,
             num_processed_sites=0,
@@ -871,7 +892,25 @@ class DB:
         assert type(batches)==list
         for batch in batches:
             batch_id=batch[0]
+
+            # get batch status information
+            batch_status_res=self.dbExec(f"""
+                select status,start_time,end_time
+                from profile_results
+                where experimentid={experiment_id}
+                    and batchid={batch_id};
+            """)
+            assert type(batch_status_res)==list
+            assert len(batch_status_res)==1, len(batch_status_res)
+            batch_status_text,batch_status_startTime,batch_status_endTime=batch_status_res[0]
             
+            res.batch_information.append(BatchStatusInformation(
+                batchid=batch_id,
+                status=batch_status_text,
+                start_time=batch_status_startTime,
+                end_time=batch_status_endTime,
+            ))
+
             # get list of well+site that have been processed for this batch
             # also get the file locations of the results
             processed_sites=self.dbExec(f"""
@@ -937,7 +976,7 @@ class DB:
         return res
 
     def dumpDatabaseHead(self,n:int=5):
-        """ print forst n rows of each table, if they exist """
+        """ print forst n rows of each table in database, if they exist """
         assert self.dbmetadata.tables is not None
         for table in self.dbmetadata.tables.values():
             res=self.dbExec(f"select * from {table.name} limit {n};",as_pd=True)
@@ -945,15 +984,49 @@ class DB:
             if res is not None:
                 print(table.name,res,sep="\n")
 
-    def getProcessingBatchID(self,project_name:str,experiment_name:str)->int:
-        # get processing batch id for this experiment, by increasing the maximum batch id for this experiment by 1, and using 0 if none already exist
-        
+    def getProjectID(self,project_name:str)->int:
+        """
+        get project id by project name
+
+        raises if not found
+        """
+
         res=self.dbExec(f"select id from projects where name='{project_name}';")
         assert type(res)==list
-        project_id=res[0][0]
+    
+        if len(res)==0:
+            raise ValueError(f"project {project_name} not found in database")
+        
+        return res[0][0]
+    
+    def getExperimentID(self,
+        project:tp.Union[str,int],
+        experiment_name:str
+    )->int:
+        """
+        get experiment id by project name and experiment name
+
+        raises if not found
+        """
+
+        if isinstance(project,str):
+            project_id=self.getProjectID(project)
+        else:
+            project_id=project
+        
         res=self.dbExec(f"select id from experiments where projectid={project_id} and name='{experiment_name}';")
         assert type(res)==list
-        experiment_id=res[0][0]
+        if len(res)==0:
+            raise ValueError(f"experiment {experiment_name} not found in database")
+        
+        return res[0][0]
+
+    def getProcessingBatchID(self,project_name:str,experiment_name:str)->int:
+        """
+        get processing batch id for this experiment, by increasing the maximum batch id for this experiment by 1, and using 0 if none already exist
+        """
+        
+        experiment_id=self.getExperimentID(project_name,experiment_name)
 
         res=self.dbExec(f"select max(batchid) from profile_results where experimentid={experiment_id};")
         assert type(res)==list
@@ -963,15 +1036,28 @@ class DB:
         return res[0][0]+1
 
     def getProjectNames(self)->Result_getProjectNames:
+        """
+        get a list of all project names
+        """
+
         res=self.dbExec("select name from projects;",as_pd=True)
         assert type(res)==pd.DataFrame
+        
         return Result_getProjectNames(
             projects=res["name"].tolist()
         )
     
     def getExperiments(self,projectname:str)->Result_getExperiments:
-        res=self.dbExec(f"select name from experiments where projectid=(select id from projects where name='{projectname}');",as_pd=True)
+        """
+        get a list of all experiment names for a project
+
+        inherits behavior from getProjectID
+        """
+
+        projectid=self.getProjectID(projectname)
+        res=self.dbExec(f"select name from experiments where projectid={projectid};",as_pd=True)
         assert type(res)==pd.DataFrame
+
         return Result_getExperiments(
             experiments=res["name"].tolist()
         )
