@@ -179,6 +179,6 @@ def uploadFile():
         ],
     )),Status.OK
 
-print("Running web frontend on port",os.getenv("WEB_FRONTEND_PORT"))
 _WEB_FRONTEND_PORT_ENV=os.getenv("WEB_FRONTEND_PORT") ; assert _WEB_FRONTEND_PORT_ENV is not None
+print("Running web frontend on port",_WEB_FRONTEND_PORT_ENV)
 app.run(debug=True,host="0.0.0.0",port=int(_WEB_FRONTEND_PORT_ENV))
