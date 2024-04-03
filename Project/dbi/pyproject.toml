@@ -1,0 +1,37 @@
+[project]
+name = "dbi"
+version = "0.1.0"
+dependencies = [
+	"numpy>=1.23,<1.24",
+	"tqdm",
+	"scikit-learn",
+	"plotly>=5.16,<5.17",
+	"umap-learn==0.5.5",
+
+	# default dataframe library
+	"pandas>=1.5.3,<1.6",
+	# required by pandas for database connection, and v2.0 removes ExecutionEngine.execute, which is required
+	"connectorx",
+	# required by pandas for excel file import
+	"openpyxl",
+	# required by pandas for parquet import/export
+	"pyarrow",
+
+	# fast pandas compatible dataframe library
+	"polars>=0.19.9,<0.20.0",
+	"sqlalchemy<2.0",
+	# required for polars database connection
+
+	"celery",
+	"flask==3.0.2",
+	"werkzeug",
+	"mariadb",
+	"mysql-connector-python",
+	"boto3==1.34.72",
+	"boto3-stubs==1.34.72",
+
+	"pydantic==2.5.2",
+
+	# dev-dependency
+	"boto3-stubs[essential]",
+]
