@@ -610,30 +610,34 @@ class DB:
         objective_id:int=res[0][0]
 
         # create experiment
-        exp_name=experiment["experiment_name"]
+        exp_name:str=experiment["experiment_name"]
         # check if there is an experiment in this project already in the database:
         res=self.dbExec(f"select id from experiments where name='{exp_name}' and projectid={proj_id};")
         assert type(res)==list
-        if len(res)>0:
+        project_already_exists:bool=len(res)>0
+        if project_already_exists:
             print(f"info - experiment {exp_name} in project {proj_name} already exists in database")
+
+        # ideally this code would detect the unit and then convert to the correct unit for the database
+        # but it is hardcoded because i have to draw the line for this project somewhere
+        grid_delta_x_unit:str=experiment["grid_config"]["x"]["unit"]
+        assert grid_delta_x_unit=="mm", grid_delta_x_unit
+        grid_delta_y_unit:str=experiment["grid_config"]["y"]["unit"]
+        assert grid_delta_y_unit=="mm", grid_delta_y_unit
+        grid_delta_z_unit:str=experiment["grid_config"]["z"]["unit"]
+        assert grid_delta_z_unit=="mm", grid_delta_z_unit
+        grid_delta_t_unit:str=experiment["grid_config"]["t"]["unit"]
+        assert grid_delta_t_unit=="s", grid_delta_t_unit
+
+        grid_num_x=int(experiment["grid_config"]["x"]["N"])
+        grid_num_y=int(experiment["grid_config"]["y"]["N"])
+        grid_num_z=int(experiment["grid_config"]["z"]["N"])
+        grid_num_t=int(experiment["grid_config"]["t"]["N"])
+
+        if project_already_exists:
+            exp_id=self.getExperimentID(proj_id,exp_name)
         else:
             exp_start_time=datetime.strptime(experiment["timestamp"], "%Y-%m-%d_%H.%M.%S")
-
-            # ideally this code would detect the unit and then convert to the correct unit for the database
-            # but it is hardcoded because i have to draw the line for this project somewhere
-            grid_delta_x_unit:str=experiment["grid_config"]["x"]["unit"]
-            assert grid_delta_x_unit=="mm", grid_delta_x_unit
-            grid_delta_y_unit:str=experiment["grid_config"]["y"]["unit"]
-            assert grid_delta_y_unit=="mm", grid_delta_y_unit
-            grid_delta_z_unit:str=experiment["grid_config"]["z"]["unit"]
-            assert grid_delta_z_unit=="mm", grid_delta_z_unit
-            grid_delta_t_unit:str=experiment["grid_config"]["t"]["unit"]
-            assert grid_delta_t_unit=="s", grid_delta_t_unit
-
-            grid_num_x=int(experiment["grid_config"]["x"]["N"])
-            grid_num_y=int(experiment["grid_config"]["y"]["N"])
-            grid_num_z=int(experiment["grid_config"]["z"]["N"])
-            grid_num_t=int(experiment["grid_config"]["t"]["N"])
 
             res=self.dbExec(self.dbExperiments.insert(),{
                 "projectid":proj_id,
@@ -659,19 +663,20 @@ class DB:
             assert type(res)==list
             exp_id:int=res[0][0]
 
-            cell_line:str=experiment["cell_line"]
+        cell_line:str=experiment["cell_line"]
 
-            # create experiment wells
-            for wellname in experiment["well_list"]:
-                res=self.dbExec(f"select id from platetype_wells where well_name='{wellname}' and platetypeid={plate_type_id};")
-                assert type(res)==list
-                if len(res)==0:
-                    raise ValueError(f"well name {wellname} not found in database")
-                well_id=res[0][0]
+        # create experiment wells
+        for wellname in experiment["well_list"]:
+            res=self.dbExec(f"select id from platetype_wells where well_name='{wellname}' and platetypeid={plate_type_id};")
+            assert type(res)==list
+            if len(res)==0:
+                raise ValueError(f"well name {wellname} not found in database")
+            well_id=res[0][0]
 
+            num_sites=grid_num_x*grid_num_y*grid_num_z
+
+            if not project_already_exists:
                 self.dbExec(self.dbExperimentWells.insert(),{"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line})
-
-                num_sites=grid_num_x*grid_num_y*grid_num_z
 
                 for site_id in range(num_sites):
                     site_id+=1 # sites are 1-indexed
@@ -689,25 +694,34 @@ class DB:
                         "site_t":site_t,
                     })
 
-            imaging_channel_ids={}
+        imaging_channel_ids={}
 
-            # create experiment imaging channels
-            for channel_imaging_order_index,channel in enumerate(experiment["channels_ordered"]):
-                current_channel_config=None
-                for channel_config in experiment["channels_config"]:
-                    if channel_config["Name"]==channel:
-                        current_channel_config=channel_config
-                        break
-                assert current_channel_config is not None, f"channel {channel} not found in experiment config"
+        # create experiment imaging channels
+        for channel_imaging_order_index,channel in enumerate(experiment["channels_ordered"]):
+            current_channel_config=None
+            for channel_config in experiment["channels_config"]:
+                if channel_config["Name"]==channel:
+                    current_channel_config=channel_config
+                    break
+            assert current_channel_config is not None, f"channel {channel} not found in experiment config"
 
-                # get channel id
-                res=self.dbExec(f"select id from imaging_channels where name='{channel}';")
+            # get channel id
+            res=self.dbExec(f"select id from imaging_channels where name='{channel}';")
+            assert type(res)==list
+            if len(res)==0:
+                raise ValueError(f"channel name {channel} not found in database")
+            
+            channel_id:int=res[0][0]
+
+            if project_already_exists:
+                res=self.dbExec(f"""
+                    select id from experiment_imaging_channels
+                    where experimentid={exp_id} and channelid={channel_id};
+                """)
                 assert type(res)==list
                 if len(res)==0:
-                    raise ValueError(f"channel name {channel} not found in database")
-                
-                channel_id:int=res[0][0]
-
+                    raise ValueError(f"channel {channel} not found in experiment {exp_name}")
+            else:
                 res=self.dbExec(self.dbExperimentImagingChannels.insert(),{
                     "experimentid":exp_id,
                     "channelid":channel_id,
@@ -717,9 +731,11 @@ class DB:
                     "illumination_strength":current_channel_config["IlluminationIntensity"],
                 })
                 assert type(res)==list
-                experiment_channel_id=res[0][0]
+                assert len(res)==1, len(res)
 
-                imaging_channel_ids[channel]=experiment_channel_id
+            experiment_channel_id:int=res[0][0]
+
+            imaging_channel_ids[channel]=experiment_channel_id
 
         # insert image metadata
         imageInsertionList=[]
