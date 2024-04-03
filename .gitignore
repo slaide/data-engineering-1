@@ -4,4 +4,5 @@
 *.egg-info
 __pycache__
 **/build/lib
-Project/**/dbi
+Project/script_workers/dbi
+Project/web-frontend/dbi
