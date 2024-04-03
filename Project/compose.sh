@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+rm -rf dbi/build
+
 rm -rf web-frontend/dbi
 cp -r dbi web-frontend/dbi
 rm -rf script_workers/dbi

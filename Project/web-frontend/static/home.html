@@ -30,6 +30,12 @@
 
                 let projectlistelement=document.createElement("ul")
                 projectlistelement.innerHTML=projectliststr
+                //  add callback to trigger experiment list on click
+                projectlistelement.addEventListener("click", function(event){
+                    let projectname=event.target.innerText
+                    document.getElementById("projectname").value=projectname
+                    document.getElementById("get-experiments").click()
+                })
 
                 let projectlistcontainer=document.getElementById("projectlist")
 
@@ -71,6 +77,14 @@
 
                 let experimentlistelement=document.createElement("ul")
                 experimentlistelement.innerHTML=experimentliststr
+                experimentlistelement.addEventListener("click", function(event){
+                    let experimentname=event.target.innerText
+                    let projectname=document.getElementById("projectname").value
+                    document.getElementById("experiment-progress-projectname").value=projectname
+                    document.getElementById("experiment-progress-experimentname").value=experimentname
+                    document.getElementById("experiment-progress").innerText="loading.."
+                    document.getElementById("experiment-progress-get").click()
+                })
 
                 let experimentlistcontainer=document.getElementById("experimentlist")
 
@@ -86,9 +100,44 @@
     </script>
     <form>
         <input type="text" id="projectname" name="projectname" placeholder="projectname">
-        <input type="submit" value="get experiments" onclick="getexperiments(event)">
+        <input type="submit" id="get-experiments" value="get experiments" onclick="getexperiments(event)">
     </form>
     <div id="experimentlist"></div>
+
+    <script>
+        function getExperimentProgress(event){
+            event.preventDefault()
+            let projectname=document.getElementById("experiment-progress-projectname").value
+            let experimentname=document.getElementById("experiment-progress-experimentname").value
+
+            let req=new XMLHttpRequest()
+            req.open('GET', '/api/get_experiment_progress?projectname='+projectname+'&experimentname='+experimentname, true);
+            req.onload=(function(){
+                if(!(this.readyState === 4 && this.status === 200)){
+                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                    return
+                }
+
+                let response=JSON.parse(req.responseText)
+
+                let progresscontainer=document.getElementById("experiment-progress")
+
+                while(progresscontainer.firstChild){
+                    progresscontainer.removeChild(progresscontainer.firstChild)
+                }
+
+                progresscontainer.innerText=req.responseText
+
+            }).bind(req)
+            req.send()
+        }
+    </script>
+    <form>
+        <input type="text" id="experiment-progress-projectname" name="projectname" placeholder="projectname">
+        <input type="text" id="experiment-progress-experimentname" name="experimentname" placeholder="experimentname">
+        <input type="submit" id="experiment-progress-get" value="get progress" onclick="getExperimentProgress(event)">
+    </form>
+    <div id="experiment-progress"></div>
 
     <h1>Upload new File</h1>
     <style>

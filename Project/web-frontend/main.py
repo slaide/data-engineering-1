@@ -10,11 +10,12 @@ import io
 from dataclasses import dataclass
 
 from celery.result import AsyncResult
-from dbi import DB, BUCKET_NAME, s3_client, Result_cp_map, ObjectStorageFileReference
-
-STATIC_FILE_DIR = './static'
+from dbi import DB, BUCKET_NAME, S3Client, ObjectStorageFileReference
 
 mydb=DB()
+s3client=S3Client()
+
+STATIC_FILE_DIR = './static'
 
 app = Flask(__name__)
 app.config['STATIC_FILE_DIR'] = STATIC_FILE_DIR
@@ -75,10 +76,10 @@ def serveStaticFile(name:str)->tp.Tuple[Response,Status]:
     return response,Status.OK
 
 @app.route('/download/<bucket>/<path:filename>')
-def download_file(bucket, filename):
+def download_file(bucket:str, filename:str):
     def generate_file():
         with io.BytesIO() as file_stream:
-            s3_client.download_fileobj(Bucket=bucket, Key=filename, Fileobj=file_stream)
+            s3client.handle.download_fileobj(Bucket=bucket, Key=filename, Fileobj=file_stream)
             file_stream.seek(0)  # Go to the beginning of the file-like object
             while chunk := file_stream.read(4096):  # Read in chunks of 4KB
                 yield chunk
@@ -91,22 +92,14 @@ def download_file(bucket, filename):
 def serveHome():
     return serveStaticFile("home.html")
 
-class cp_map:
-    """ wrapper for RPC call to celery task cp_map """
-    def __init__(self,*args,**kwargs):
-        res=mydb.celery.send_task("cp_map",args=args,kwargs=kwargs,queue="map_queue")
-        self.celeryResult:AsyncResult=res
+def cp_map(*args,**kwargs):
+    """
+    wrapper for async call to cp_map
 
-    def __getattr__(self, item):
-        """ only called if the item was not found in the object, so no manual check for .get() is needed """
-        return getattr(self._async_result, item)
-
-    def get(self,*args,**kwargs)->Result_cp_map:
-        """ get the result of the celery task """
-        res=self.celeryResult.get(*args,**kwargs)
-        assert type(res)==dict, type(res)
-        return Result_cp_map(**res)
-
+    returns a handle to the async result, though the actual result is None
+    """
+    res:AsyncResult=mydb.celery_tasks.send_task("cp_map",args=args,kwargs=kwargs,queue="map_queue")
+    return res
 
 @app.route("/api/get_projects",methods=["GET"])
 def getProjectNames():
@@ -119,6 +112,19 @@ def getExperiments():
     assert projectname is not None
     experiments:dict=mydb.getExperiments(projectname=projectname).__dict__
     return jsonify(experiments),Status.OK
+
+@app.route("/api/get_experiment_progress",methods=["GET"])
+def getExperimentProgress():
+    projectname=request.args.get("projectname",type=str)
+    experimentname=request.args.get("experimentname",type=str)
+    assert projectname is not None
+    assert experimentname is not None
+    progress=mydb.checkExperimentProcessingStatus(
+        project_name=projectname,
+        experiment_name=experimentname
+    )
+    ret:str=progress.model_dump_json(exclude={"resultfiles":True})
+    return ret,Status.OK
 
 @app.route('/api/upload', methods=['POST'])
 def uploadFile():
@@ -145,7 +151,7 @@ def uploadFile():
 
     batch_id=mydb.getProcessingBatchID(experiment["project_name"],experiment_name)
 
-    res=cp_map(
+    cp_map(
         [
             ObjectStorageFileReference(
                 filename=Path(image.real_filename).name,
@@ -155,38 +161,10 @@ def uploadFile():
             in imageFileList
         ],
         project_name=experiment["project_name"],
+        experiment_name=experiment_name,
         plate_name=experiment["plate_name"],
         imageBatchID=batch_id,
     )
-    res=res.get()
-    print(res)
-
-    # write result stuff back to db
-
-    mydb.insertProfileResultBatch(
-        experiment["project_name"],
-        experiment_name=experiment_name,
-        batchid=batch_id,
-        result_file_paths=res.resultfiles,
-        well_site_list=res.wells,
-    )
-
-    status=mydb.checkExperimentProcessingStatus(experiment["project_name"],experiment_name,get_merged_frames=True)
-
-    total_sites=0
-    num_processed_sites=0
-    for well,sites in status.wells.items():
-        for site,c in sites.items():
-            total_sites+=1
-            num_processed_sites+=c
-
-    print(f"Total sites: {total_sites}, Processed sites: {num_processed_sites}, i.e. done {num_processed_sites/total_sites*100:.2f}%")
-
-    for filename,df in status.resultfiles.items():
-        print(filename)
-        print(df)
-
-    mydb.dumpDatabaseHead()
 
     # redirect to display last uploaded file
     return jsonify(dict(

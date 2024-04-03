@@ -1,5 +1,8 @@
 import os, typing as tp
 
+from .objectstorage import S3Client
+
+from werkzeug.datastructures import FileStorage
 from celery import Celery
 import pandas as pd
 from sqlalchemy import create_engine, text, Table, Column, Integer, Text, MetaData, ForeignKey, Boolean, Float, DateTime
@@ -9,12 +12,8 @@ from datetime import datetime
 from dataclasses import dataclass
 import pydantic as pyd
 from pathlib import Path
-from werkzeug.datastructures import FileStorage
 import re
 from io import BytesIO
-import boto3
-from botocore.exceptions import NoCredentialsError, ClientError
-from botocore.client import Config
 from werkzeug.utils import secure_filename
 
 # setting limits to none to display all columns
@@ -22,283 +21,13 @@ pd.set_option('display.width', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_colwidth', None)
 
-_BUCKET_NAME_ENV=os.getenv("S3_BUCKET_NAME") ; assert _BUCKET_NAME_ENV is not None
-BUCKET_NAME=_BUCKET_NAME_ENV
-DBNAME="morphology_information"
-
 MARIADB_USER_USERNAME=os.getenv('MARIADB_USER_USERNAME') ; assert MARIADB_USER_USERNAME is not None
 MARIADB_USER_PASSWORD=os.getenv('MARIADB_USER_PASSWORD') or '' # password may be empty
 MARIADB_HOSTNAME=os.getenv('MARIADB_HOSTNAME') ; assert MARIADB_HOSTNAME is not None
 _MARIADB_PORT_ENV=os.getenv('MARIADB_PORT') ; assert _MARIADB_PORT_ENV is not None
 MARIADB_PORT=int(_MARIADB_PORT_ENV)
 
-S3_HOSTNAME=os.getenv("S3_HOSTNAME") ; assert S3_HOSTNAME is not None
-_S3_PORT_ENV=os.getenv("S3_PORT") ; assert _S3_PORT_ENV is not None
-S3_PORT=int(_S3_PORT_ENV)
-S3_ACCESS_KEY_ID=os.getenv("S3_ACCESS_KEY_ID") ; assert S3_ACCESS_KEY_ID is not None
-S3_SECRET_ACCESS_KEY=os.getenv("S3_SECRET_ACCESS_KEY") ; assert S3_SECRET_ACCESS_KEY is not None
-
-session=boto3.session.Session(
-    aws_access_key_id=S3_ACCESS_KEY_ID,
-    aws_secret_access_key=S3_SECRET_ACCESS_KEY,
-)
-s3_client=session.client(
-    "s3",
-    endpoint_url=f'http://{S3_HOSTNAME}:{S3_PORT}',
-    config=Config(signature_version='s3v4'),
-    use_ssl=False, verify=False, # Disable SSL
-)
-print("\n"*5)
-print(f"{type(s3_client) = }")
-print("\n"*5)
-assert s3_client is not None
-
-def ensure_s3_bucket(bucket_name:str, region=None)->bool:
-    """
-    ensure the bucket exists in the region, i.e. create it if it does not exist.
-    If no region is specified, the bucket is created in the S3 default region (us-east-1).
-
-    :param bucket_name: Bucket to create
-    :param region: String region to create bucket in, e.g., 'us-west-2'
-    :return: True if bucket created, False is bucket already existed
-    """
-    
-    # Check if the bucket already exists
-    try:
-        s3_client.head_bucket(Bucket=bucket_name)
-        return False
-    except ClientError as e:
-        try:
-            assert "Error" in e.response
-            assert "Code" in e.response["Error"]
-        except AssertionError as a:
-            print(f"Failed to check bucket existence: {a}")
-        error_code = e.response['Error']['Code']
-        if error_code == '404':
-            # The bucket does not exist, create it
-            try:
-                if region is None:
-                    s3_client.create_bucket(Bucket=bucket_name)
-                else:
-                    location = {'LocationConstraint': region}
-                    s3_client.create_bucket(Bucket=bucket_name,
-                                            CreateBucketConfiguration=location)
-
-                return True
-            except ClientError as e:
-                print(f"Failed to create bucket: {e}")
-                raise RuntimeError(f"Failed to create bucket: {e}")
-        else:
-            print(f"Failed to check bucket existence: {e}")
-            raise RuntimeError(f"Failed to check bucket existence: {e}")
-
-
-def upload_file_to_s3_localstack(
-    file:tp.Union[str,FileStorage], 
-    bucket:str, 
-    object_name:str
-)->bool:
-    """
-    Uploads a file to the specified S3 bucket on LocalStack
-
-    :param file_name: File to upload
-    :param bucket: Bucket to upload to
-    :param object_name: S3 object name. If not specified, file_name is used
-    :return: True if file was uploaded, else False
-    """
-
-    ensure_s3_bucket(bucket)
-
-    try:
-        if isinstance(file, str):
-            s3_client.upload_file(file, bucket, object_name)
-        elif isinstance(file, FileStorage):
-            s3_client.upload_fileobj(file, bucket, object_name)
-        else:
-            raise ValueError(f"file must be either a string or a FileStorage object, not {type(file)}")
-    except NoCredentialsError:
-        print("Credentials not available")
-        return False
-    return True
-
-dbmetadata=MetaData(schema=DBNAME)
-
-# this table contains all projects
-# a project must have a name
-# a project can have any number of plates and any number of experiments
-dbProjects=Table(
-    "projects", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("name",Text,unique=True,nullable=False),
-)
-assert dbProjects is not None
-# this table contains all physical plates
-# a plate must have a barcode
-# a plate can be part of any number of experiments
-dbPlates=Table(
-    "plates", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("platetypeid",Integer,ForeignKey("plate_types.id",ondelete="cascade"),nullable=False),
-    Column("barcode",Text,nullable=False),
-)
-assert dbPlates is not None
-# this table contains all experiments
-# an experiment must belong to exactly one project
-# an experiment must have a name
-# an experiment can have a description
-# an experiment involves exactly one plate
-
-# the experiment contains meta information, such as:
-# - the microscope used
-# - the objective used
-# - the list of wells that were imaged (this information is in the experiment_wells table)
-# - the list of imaging channels used (this information is in the experiment_imaging_channels table)
-# - the number of images per well in x/y/z/t, and the respective distances
-dbExperiments=Table(
-    "experiments", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("projectid",Integer,ForeignKey("projects.id",ondelete="cascade"),nullable=False),
-    Column("name",Text,nullable=False),
-    Column("description",Text,nullable=True),
-    Column("plateid",Integer,ForeignKey("plates.id",ondelete="cascade"),nullable=False),
-    Column("microscopeid",Integer,ForeignKey("microscopes.id",ondelete="cascade"),nullable=False),
-    Column("objectiveid",Integer,ForeignKey("objectives.id",ondelete="cascade"),nullable=False),
-    Column("num_images_x",Integer,nullable=False),
-    Column("num_images_y",Integer,nullable=False),
-    Column("num_images_z",Integer,nullable=False),
-    Column("num_images_t",Integer,nullable=False),
-    Column("delta_x_mm",Float,nullable=False),
-    Column("delta_y_mm",Float,nullable=False),
-    Column("delta_z_um",Float,nullable=False),
-    Column("delta_t_h",Float,nullable=False),
-)
-assert dbExperiments is not None
-# this table contains a list of all plate types (manufacturers, brandnames, optional additional identifier)
-dbPlateTypes=Table(
-    "plate_types", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("model_name",Text,nullable=False),
-    Column("manufacturer",Text,nullable=False),
-    Column("brand",Text,nullable=False),
-    Column("num_wells",Integer,nullable=False),
-    Column("other_info",Text,nullable=True),
-)
-assert dbPlateTypes is not None
-# this table contains all wells for each plate type
-# i.e. each row contains a reference to a plate type and the name of one well on that plate type
-dbPlateTypeWells=Table(
-    "platetype_wells", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("platetypeid",Integer,ForeignKey("plate_types.id",ondelete="cascade"),nullable=False),
-    Column("well_name",Text,nullable=False),
-)
-assert dbPlateTypeWells is not None
-# this table contains a list of all microscopes
-# each microscope has a unique name
-dbMicroscopes=Table(
-    "microscopes", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("name",Text,nullable=False),
-)
-assert dbMicroscopes is not None
-# this table contains a list of all available objectives
-dbObjectives=Table(
-    "objectives", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("name",Text,nullable=False),
-)
-assert dbObjectives is not None
-# this table contains a list of the wells used in an experiment (i.e. each row contains a reference to an experiment, and to a well)
-dbExperimentWells=Table(
-    "experiment_wells", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
-    Column("wellid",Integer,ForeignKey("platetype_wells.id",ondelete="cascade"),nullable=False),
-    Column("cell_line",Text,nullable=True),
-)
-assert dbExperimentWells is not None
-dbExperimentWellSites=Table(
-    "experiment_well_sites", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("experiment_wellid",Integer,ForeignKey("experiment_wells.id",ondelete="cascade"),nullable=False),
-    # site_id within well! e.g. 1-4 with 4 sites per well in xyzt combined
-    Column("site_id",Integer,nullable=False),
-    Column("site_x",Integer,nullable=True),
-    Column("site_y",Integer,nullable=True),
-    Column("site_z",Integer,nullable=True),
-    Column("site_t",Integer,nullable=True),
-)
-assert dbExperimentWellSites is not None
-# this table contains a list of all imaging channels used in an experiment (i.e. each row contains a reference to an experiment, and to an imaging channel, including imaging channel specific information, i.e. exposure time, analog gain, illumination strength)
-dbExperimentImagingChannels=Table(
-    "experiment_imaging_channels", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
-    Column("channelid",Integer,ForeignKey("imaging_channels.id",ondelete="cascade"),nullable=False),
-    Column("imaging_order_index",Integer,nullable=False),
-    Column("exposure_time_ms",Float,nullable=False),
-    Column("analog_gain",Float,nullable=False),
-    Column("illumination_strength",Float,nullable=False),
-)
-assert dbExperimentImagingChannels is not None
-# this table contains a list of all the available imaging channels
-# mostly for legacy reasons, each channel also has a human readable name
-dbImagingChannels=Table(
-    "imaging_channels", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("is_fluorescence",Boolean,nullable=False),
-    Column("fluorescence_wavelength_nm",Integer,nullable=True),
-    Column("is_brightfield",Boolean,nullable=False),
-    Column("brightfield_type",Text,nullable=True),
-    Column("name",Text,nullable=True),
-)
-assert dbImagingChannels is not None
-# this table contains a list of all images taken
-# each image belongs to one plate in one experiment
-# each image is taken at a specific site (index in x/y/z/t)
-# in a specific channel
-# at specific coordinates (physically on the plate)
-# and the image is stored in a specific location on the object storage (s3path)
-dbImages=Table(
-    "images", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("plateid",Integer,ForeignKey("plates.id",ondelete="cascade"),nullable=False),
-    Column("s3path",Text,nullable=False),
-    Column("wellid",Integer,ForeignKey("platetype_wells.id",ondelete="cascade"),nullable=False),
-    Column("site_x",Integer,nullable=False),
-    Column("site_y",Integer,nullable=False),
-    Column("site_z",Integer,nullable=False),
-    Column("site_t",Integer,nullable=False),
-    Column("experimentchannelid",Integer,ForeignKey("experiment_imaging_channels.id",ondelete="cascade"),nullable=False),
-    Column("coord_x_mm",Float,nullable=True),
-    Column("coord_y_mm",Float,nullable=True),
-    Column("coord_z_um",Float,nullable=True),
-    Column("coord_t",DateTime,nullable=True),
-)
-assert dbImages is not None
-
-dbProfileResults=Table(
-    "profile_results", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
-    Column("batchid",Integer,nullable=False),
-)
-assert dbProfileResults is not None
-dbProfileResultBatchSites=Table(
-    "profile_result_batch_sites", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("profile_resultid",Integer,ForeignKey("profile_results.id",ondelete="cascade"),nullable=False),
-    Column("siteid",Integer,ForeignKey("experiment_well_sites.id",ondelete="cascade"),nullable=False),
-)
-assert dbProfileResultBatchSites is not None
-dbProfileResultFiles=Table(
-    "profile_result_files", dbmetadata,
-    Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
-    Column("profile_resultid",Integer,ForeignKey("profile_results.id",ondelete="cascade"),nullable=False),
-    Column("s3path",Text,nullable=False),
-    Column("filename",Text,nullable=True),
-)
-assert dbProfileResultFiles is not None
+DBNAME="morphology_information"
 
 # deconstruct image naming scheme to get image metadata...
 @dataclass(repr=True,frozen=False)
@@ -425,10 +154,14 @@ class Result_getExperiments(pyd.BaseModel):
 class Result_getProjectNames(pyd.BaseModel):
     projects:tp.List[str]
 
-@dataclass
-class Result_processingStatus:
+class Result_processingStatus(pyd.BaseModel):
+    class Config:
+        arbitrary_types_allowed=True
+
     wells:tp.Dict[str,tp.Dict[int,int]]
     resultfiles:tp.Dict[str,pd.DataFrame]
+    total_sites:int
+    num_processed_sites:int
 
 class DB:
     @staticmethod
@@ -444,7 +177,176 @@ class DB:
             conn.execute(text(f"USE {dbname};"))
 
     def __init__(self,recreate:bool=True):
-        self.celery = Celery('dbwatcher', backend='rpc://', broker=os.getenv('APP_BROKER_URI'), broker_pool_limit = 0)
+        self.celery_rpc = Celery('dbwatcher', backend='rpc://', broker=os.getenv('APP_BROKER_URI'), broker_pool_limit = 0)
+        """ 'request/response, i.e. rpc' task queue """
+        self.celery_tasks = Celery('dbwatcher', broker=os.getenv('APP_BROKER_URI'), broker_pool_limit = 0)
+        """ 'fire and forget' task queue """
+
+        # create python table objects
+        if True:
+            self.dbmetadata=MetaData(schema=DBNAME)
+
+            # this table contains all projects
+            # a project must have a name
+            # a project can have any number of plates and any number of experiments
+            self.dbProjects:Table=Table(
+                "projects", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("name",Text,unique=True,nullable=False),
+            )
+            # this table contains all physical plates
+            # a plate must have a barcode
+            # a plate can be part of any number of experiments
+            self.dbPlates:Table=Table(
+                "plates", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("platetypeid",Integer,ForeignKey("plate_types.id",ondelete="cascade"),nullable=False),
+                Column("barcode",Text,nullable=False),
+            )
+            # this table contains all experiments
+            # an experiment must belong to exactly one project
+            # an experiment must have a name
+            # an experiment can have a description
+            # an experiment involves exactly one plate
+
+            # the experiment contains meta information, such as:
+            # - the microscope used
+            # - the objective used
+            # - the list of wells that were imaged (this information is in the experiment_wells table)
+            # - the list of imaging channels used (this information is in the experiment_imaging_channels table)
+            # - the number of images per well in x/y/z/t, and the respective distances
+            self.dbExperiments:Table=Table(
+                "experiments", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("projectid",Integer,ForeignKey("projects.id",ondelete="cascade"),nullable=False),
+                Column("name",Text,nullable=False),
+                Column("description",Text,nullable=True),
+                Column("plateid",Integer,ForeignKey("plates.id",ondelete="cascade"),nullable=False),
+                Column("microscopeid",Integer,ForeignKey("microscopes.id",ondelete="cascade"),nullable=False),
+                Column("objectiveid",Integer,ForeignKey("objectives.id",ondelete="cascade"),nullable=False),
+                Column("num_images_x",Integer,nullable=False),
+                Column("num_images_y",Integer,nullable=False),
+                Column("num_images_z",Integer,nullable=False),
+                Column("num_images_t",Integer,nullable=False),
+                Column("delta_x_mm",Float,nullable=False),
+                Column("delta_y_mm",Float,nullable=False),
+                Column("delta_z_um",Float,nullable=False),
+                Column("delta_t_h",Float,nullable=False),
+            )
+            # this table contains a list of all plate types (manufacturers, brandnames, optional additional identifier)
+            self.dbPlateTypes:Table=Table(
+                "plate_types", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("model_name",Text,nullable=False),
+                Column("manufacturer",Text,nullable=False),
+                Column("brand",Text,nullable=False),
+                Column("num_wells",Integer,nullable=False),
+                Column("other_info",Text,nullable=True),
+            )
+            # this table contains all wells for each plate type
+            # i.e. each row contains a reference to a plate type and the name of one well on that plate type
+            self.dbPlateTypeWells:Table=Table(
+                "platetype_wells", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("platetypeid",Integer,ForeignKey("plate_types.id",ondelete="cascade"),nullable=False),
+                Column("well_name",Text,nullable=False),
+            )
+            # this table contains a list of all microscopes
+            # each microscope has a unique name
+            self.dbMicroscopes:Table=Table(
+                "microscopes", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("name",Text,nullable=False),
+            )
+            # this table contains a list of all available objectives
+            self.dbObjectives:Table=Table(
+                "objectives", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("name",Text,nullable=False),
+            )
+            # this table contains a list of the wells used in an experiment (i.e. each row contains a reference to an experiment, and to a well)
+            self.dbExperimentWells:Table=Table(
+                "experiment_wells", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
+                Column("wellid",Integer,ForeignKey("platetype_wells.id",ondelete="cascade"),nullable=False),
+                Column("cell_line",Text,nullable=True),
+            )
+            self.dbExperimentWellSites:Table=Table(
+                "experiment_well_sites", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("experiment_wellid",Integer,ForeignKey("experiment_wells.id",ondelete="cascade"),nullable=False),
+                # site_id within well! e.g. 1-4 with 4 sites per well in xyzt combined
+                Column("site_id",Integer,nullable=False),
+                Column("site_x",Integer,nullable=True),
+                Column("site_y",Integer,nullable=True),
+                Column("site_z",Integer,nullable=True),
+                Column("site_t",Integer,nullable=True),
+            )
+            # this table contains a list of all imaging channels used in an experiment (i.e. each row contains a reference to an experiment, and to an imaging channel, including imaging channel specific information, i.e. exposure time, analog gain, illumination strength)
+            self.dbExperimentImagingChannels:Table=Table(
+                "experiment_imaging_channels", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
+                Column("channelid",Integer,ForeignKey("imaging_channels.id",ondelete="cascade"),nullable=False),
+                Column("imaging_order_index",Integer,nullable=False),
+                Column("exposure_time_ms",Float,nullable=False),
+                Column("analog_gain",Float,nullable=False),
+                Column("illumination_strength",Float,nullable=False),
+            )
+            # this table contains a list of all the available imaging channels
+            # mostly for legacy reasons, each channel also has a human readable name
+            self.dbImagingChannels:Table=Table(
+                "imaging_channels", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("is_fluorescence",Boolean,nullable=False),
+                Column("fluorescence_wavelength_nm",Integer,nullable=True),
+                Column("is_brightfield",Boolean,nullable=False),
+                Column("brightfield_type",Text,nullable=True),
+                Column("name",Text,nullable=True),
+            )
+            # this table contains a list of all images taken
+            # each image belongs to one plate in one experiment
+            # each image is taken at a specific site (index in x/y/z/t)
+            # in a specific channel
+            # at specific coordinates (physically on the plate)
+            # and the image is stored in a specific location on the object storage (s3path)
+            self.dbImages:Table=Table(
+                "images", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("plateid",Integer,ForeignKey("plates.id",ondelete="cascade"),nullable=False),
+                Column("s3path",Text,nullable=False),
+                Column("wellid",Integer,ForeignKey("platetype_wells.id",ondelete="cascade"),nullable=False),
+                Column("site_x",Integer,nullable=False),
+                Column("site_y",Integer,nullable=False),
+                Column("site_z",Integer,nullable=False),
+                Column("site_t",Integer,nullable=False),
+                Column("experimentchannelid",Integer,ForeignKey("experiment_imaging_channels.id",ondelete="cascade"),nullable=False),
+                Column("coord_x_mm",Float,nullable=True),
+                Column("coord_y_mm",Float,nullable=True),
+                Column("coord_z_um",Float,nullable=True),
+                Column("coord_t",DateTime,nullable=True),
+            )
+
+            self.dbProfileResults:Table=Table(
+                "profile_results", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("experimentid",Integer,ForeignKey("experiments.id",ondelete="cascade"),nullable=False),
+                Column("batchid",Integer,nullable=False),
+            )
+            self.dbProfileResultBatchSites:Table=Table(
+                "profile_result_batch_sites", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("profile_resultid",Integer,ForeignKey("profile_results.id",ondelete="cascade"),nullable=False),
+                Column("siteid",Integer,ForeignKey("experiment_well_sites.id",ondelete="cascade"),nullable=False),
+            )
+            self.dbProfileResultFiles:Table=Table(
+                "profile_result_files", self.dbmetadata,
+                Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
+                Column("profile_resultid",Integer,ForeignKey("profile_results.id",ondelete="cascade"),nullable=False),
+                Column("s3path",Text,nullable=False),
+                Column("filename",Text,nullable=True),
+            )
 
         if recreate:
             dbengine=create_engine(f"mariadb+mariadbconnector://{MARIADB_USER_USERNAME}:{MARIADB_USER_PASSWORD}@{MARIADB_HOSTNAME}:{MARIADB_PORT}")
@@ -454,7 +356,7 @@ class DB:
             DB.createDatabase(dbname=DBNAME,conn=conn)
 
             # creates the tables, if they dont exist already
-            dbmetadata.create_all(dbengine)
+            self.dbmetadata.create_all(dbengine)
 
             self.conn=conn
             self.insertStaticData()
@@ -468,6 +370,8 @@ class DB:
         assert type(conn)==Connection
 
         self.conn=conn
+
+        self.s3client=S3Client()
 
     def dbExec(self,
         query:tp.Union[str,Insert,Select],
@@ -516,12 +420,12 @@ class DB:
         """ insert some static data, e.g. imaging channels, plate types, wells for each plate type """
 
         # static imaging channel dataset
-        res=self.dbExec(dbImagingChannels.insert(),[
+        res=self.dbExec(self.dbImagingChannels.insert(),[
             {"name":"BF full","is_brightfield":True,"is_fluorescence":False,"brightfield_type":"full"},
             {"name":"BF right half","is_brightfield":True,"is_fluorescence":False,"brightfield_type":"right half"},
             {"name":"BF left half","is_brightfield":True,"is_fluorescence":False,"brightfield_type":"left half"},
         ])
-        res=self.dbExec(dbImagingChannels.insert(),[
+        res=self.dbExec(self.dbImagingChannels.insert(),[
             {"name":"Fluorescence 405 nm Ex","is_brightfield":False,"is_fluorescence":True,"fluorescence_wavelength_nm":405},
             {"name":"Fluorescence 488 nm Ex","is_brightfield":False,"is_fluorescence":True,"fluorescence_wavelength_nm":488},
             {"name":"Fluorescence 560 nm Ex","is_brightfield":False,"is_fluorescence":True,"fluorescence_wavelength_nm":560},
@@ -530,7 +434,7 @@ class DB:
         ])
 
         # plate_type information
-        res=self.dbExec(dbPlateTypes.insert(),[
+        res=self.dbExec(self.dbPlateTypes.insert(),[
             {"model_name":"96-CO-3603","num_wells":96,"manufacturer":"Corning","brand":"Costar","other_info":"96 well plate with a flat bottom"},
         ])
 
@@ -554,32 +458,9 @@ class DB:
                     wellname=f"{chr(65+row)}{col+1:02d}"
                     plate_well_list.append({"platetypeid":platetypeid,"well_name":wellname})
 
-            self.dbExec(dbPlateTypeWells.insert(),plate_well_list)
+            self.dbExec(self.dbPlateTypeWells.insert(),plate_well_list)
 
         self.dumpDatabaseHead()
-
-    def checkTasksRegistered(self,tasks:tp.List[str]):
-        registered_tasks=None
-        try:
-            inspector=self.celery.control.inspect()
-            registered_tasks=inspector.registered()
-        except:
-            pass
-        finally:
-            if registered_tasks is None:
-                return False
-
-        if tasks is None:
-            return True
-
-        task_names=set(tasks)
-
-        registered_task_names=[]
-        for tl in registered_tasks.values():
-            registered_task_names.extend(tl)
-        registered_task_names=set(registered_task_names)
-        
-        return registered_task_names.issuperset(task_names)
 
     def insertExperimentMetadata(self,
         experiment:dict,
@@ -593,7 +474,7 @@ class DB:
         res=self.dbExec(f"select id from projects where name='{proj_name}';")
         assert type(res)==list
         if len(res)==0:
-            self.dbExec(dbProjects.insert(),{"name":proj_name})
+            self.dbExec(self.dbProjects.insert(),{"name":proj_name})
         res=self.dbExec(f"select id from projects where name='{proj_name}';")
         assert type(res)==list
         proj_id:int=res[0][0]
@@ -611,7 +492,7 @@ class DB:
         res=self.dbExec(f"select id from plates where barcode='{plate_name}';")
         assert type(res)==list
         if len(res)==0:
-            self.dbExec(dbPlates.insert().prefix_with("ignore"),{"projectid":proj_id,"platetypeid":plate_type_id,"barcode":plate_name})
+            self.dbExec(self.dbPlates.insert().prefix_with("ignore"),{"projectid":proj_id,"platetypeid":plate_type_id,"barcode":plate_name})
         res=self.dbExec(f"select id from plates where barcode='{plate_name}';")
         assert type(res)==list
         plate_id:int=res[0][0]
@@ -621,7 +502,7 @@ class DB:
         res=self.dbExec(f"select id from microscopes where name='{microscope_name}';")
         assert type(res)==list
         if len(res)==0:
-            self.dbExec(dbMicroscopes.insert(),{"name":microscope_name})
+            self.dbExec(self.dbMicroscopes.insert(),{"name":microscope_name})
         res=self.dbExec(f"select id from microscopes where name='{microscope_name}';")
         assert type(res)==list
         microscope_id:int=res[0][0]
@@ -631,7 +512,7 @@ class DB:
         res=self.dbExec(f"select id from objectives where name='{objective_name}';")
         assert type(res)==list
         if len(res)==0:
-            self.dbExec(dbObjectives.insert(),{"name":objective_name})
+            self.dbExec(self.dbObjectives.insert(),{"name":objective_name})
         res=self.dbExec(f"select id from objectives where name='{objective_name}';")
         assert type(res)==list
         objective_id:int=res[0][0]
@@ -656,7 +537,7 @@ class DB:
         grid_num_z=int(experiment["grid_config"]["z"]["N"])
         grid_num_t=int(experiment["grid_config"]["t"]["N"])
 
-        res=self.dbExec(dbExperiments.insert(),{
+        res=self.dbExec(self.dbExperiments.insert(),{
             "projectid":proj_id,
             "name":exp_name,
             "start_time":exp_start_time,
@@ -690,7 +571,7 @@ class DB:
                 raise ValueError(f"well name {wellname} not found in database")
             well_id=res[0][0]
 
-            self.dbExec(dbExperimentWells.insert(),{"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line})
+            self.dbExec(self.dbExperimentWells.insert(),{"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line})
 
             num_sites=grid_num_x*grid_num_y*grid_num_z
 
@@ -701,7 +582,7 @@ class DB:
                 site_z=(site_id//(grid_num_x*grid_num_y))%grid_num_z
                 site_t=(site_id//(grid_num_x*grid_num_y*grid_num_z))%grid_num_t
 
-                self.dbExec(dbExperimentWellSites.insert(),{
+                self.dbExec(self.dbExperimentWellSites.insert(),{
                     "experiment_wellid":exp_id,
                     "site_id":site_id,
                     "site_x":site_x,
@@ -729,7 +610,7 @@ class DB:
             
             channel_id:int=res[0][0]
 
-            res=self.dbExec(dbExperimentImagingChannels.insert(),{
+            res=self.dbExec(self.dbExperimentImagingChannels.insert(),{
                 "experimentid":exp_id,
                 "channelid":channel_id,
                 "imaging_order_index":channel_imaging_order_index,
@@ -759,7 +640,7 @@ class DB:
             savePathInclBucket=f"{image_s3_bucketname}/{save_filepath}"
             
             # forward file to s3 storage
-            success=upload_file_to_s3_localstack(file,image_s3_bucketname,save_filepath)
+            success=self.s3client.uploadFile(file,save_filepath,bucket_override=image_s3_bucketname)
             assert success, f"uploading {save_filepath} to bucket {image_s3_bucketname} failed with {success}"
 
             image_metadata=ImageMetadata(
@@ -786,7 +667,7 @@ class DB:
             })
 
         print(f"inserting {len(imageMetadataList)} images")
-        self.dbExec(dbImages.insert(),imageInsertionList)
+        self.dbExec(self.dbImages.insert(),imageInsertionList)
         
         self.dumpDatabaseHead()
 
@@ -811,7 +692,7 @@ class DB:
         experiment_id=res[0][0]
 
         # create profile result batch
-        res=self.dbExec(dbProfileResults.insert(),{
+        res=self.dbExec(self.dbProfileResults.insert(),{
             "experimentid":experiment_id,
             "batchid":batchid,
         })
@@ -820,7 +701,7 @@ class DB:
 
         # write result file paths
         for result_file in result_file_paths:
-            self.dbExec(dbProfileResultFiles.insert(),{
+            self.dbExec(self.dbProfileResultFiles.insert(),{
                 "profile_resultid":profile_result_id,
                 "s3path":result_file.s3path,
                 "filename":result_file.filename,
@@ -843,7 +724,7 @@ class DB:
                 raise ValueError(f"well {well} site {site} not found in database")
             well_site_id=res[0][0]
 
-            self.dbExec(dbProfileResultBatchSites.insert(),{
+            self.dbExec(self.dbProfileResultBatchSites.insert(),{
                 "profile_resultid":profile_result_id,
                 "siteid":well_site_id,
             })
@@ -856,9 +737,13 @@ class DB:
         
         res=self.dbExec(f"select id from projects where name='{project_name}';")
         assert type(res)==list
+        if len(res)==0:
+            raise ValueError(f"project {project_name} not found in database")
         project_id=res[0][0]
         res=self.dbExec(f"select id from experiments where projectid={project_id} and name='{experiment_name}';")
         assert type(res)==list
+        if len(res)==0:
+            raise ValueError(f"experiment {experiment_name} not found in database")
         experiment_id=res[0][0]
 
         # get list of wells and number of sites per well from experiment definition
@@ -872,7 +757,6 @@ class DB:
         experiment=experiment.iloc[0]
         num_sites=experiment["num_images_x"]*experiment["num_images_y"]*experiment["num_images_z"]*experiment["num_images_t"]
         assert num_sites>0, f"no sites found for experiment {experiment_name}"
-        print(f"{num_sites = }")
 
         # get list of well names from experiment_wells, using experimentid and wellid
         wells=self.dbExec(f"""
@@ -883,7 +767,6 @@ class DB:
         assert type(wells)==pd.DataFrame
         assert len(wells)>0, f"no wells found for experiment {experiment_name}"
         wells=wells["well_name"].tolist()
-        print(f"{len(wells) = } ; {wells = }")
 
         res=Result_processingStatus(
             wells={
@@ -891,7 +774,9 @@ class DB:
                 for well
                 in wells
             },
-            resultfiles={}
+            resultfiles={},
+            total_sites=0,
+            num_processed_sites=0,
         )
 
         # check if all sites in all wells have been processed
@@ -923,7 +808,6 @@ class DB:
                 );
             """,as_pd=True)
             assert type(processed_sites)==pd.DataFrame
-            print(f"{processed_sites = }")
 
             for _rowindex,row in processed_sites.iterrows():
                 well=row["well_name"]
@@ -936,7 +820,7 @@ class DB:
                     file=BytesIO()
 
                     # get merged frames from s3 as in-memory file
-                    s3_client.download_fileobj(Bucket=BUCKET_NAME,Key=s3path,Fileobj=file)
+                    self.s3client.downloadFileObj(object_name=s3path,fileobj=file)
                     file.seek(0)
 
                     # read file into memory dataframe with pandas, based on file ending .csv/.parquet
@@ -957,12 +841,18 @@ class DB:
                         assert type(res.resultfiles[filename])==pd.DataFrame
                         res.resultfiles[filename]=pd.concat([res.resultfiles[filename],df],axis=1)
     
+
+        for well,sites in res.wells.items():
+            for site,c in sites.items():
+                res.total_sites+=1
+                res.num_processed_sites+=c
+
         return res
 
     def dumpDatabaseHead(self,n:int=5):
         """ print forst n rows of each table, if they exist """
-        assert dbmetadata.tables is not None
-        for table in dbmetadata.tables.values():
+        assert self.dbmetadata.tables is not None
+        for table in self.dbmetadata.tables.values():
             res=self.dbExec(f"select * from {table.name} limit {n};",as_pd=True)
             assert type(res)==pd.DataFrame
             if res is not None:

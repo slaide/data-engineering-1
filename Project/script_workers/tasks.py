@@ -7,17 +7,22 @@ pd.set_option('display.width', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_colwidth', None)
 
-from dbi import BUCKET_NAME, s3_client, WellSite, ObjectStorageFileReference, Result_cp_map
+from dbi import DB, BUCKET_NAME, S3Client, WellSite, ObjectStorageFileReference, Result_cp_map
 
-app = Celery('tasks', backend="rpc://", broker=os.getenv('APP_BROKER_URI'), broker_pool_limit = 0)
+s3client=S3Client()
+mydb=DB(recreate=False)
 
-@app.task(name="cp_map",queue="map_queue")
+tasks = Celery('tasks', broker=os.getenv('APP_BROKER_URI'), broker_pool_limit = 0)
+rpc = Celery('tasks', backend="rpc://", broker=os.getenv('APP_BROKER_URI'), broker_pool_limit = 0)
+
+@tasks.task(name="cp_map",queue="map_queue")
 def cp_map(
     filelist:tp.List[tp.Union["ObjectStorageFileReference",dict]],
     project_name:str,
+    experiment_name:str,
     plate_name:str,
     imageBatchID:int,
-)->tp.Union["Result_cp_map",dict]:
+):
     """
         run cellprofiler on a batch of images
 
@@ -27,12 +32,6 @@ def cp_map(
             plate_name (str): plate name
             imageBatchID (int): image batch id. This is used to identify the batch of images to process, result files are stored in the object storage with a key made from projectname+platename+batchid. a batch may contain any number of image sets
 
-        Returns:
-            Result_cp_map:
-                converted to a json serializable dictionary for sending over the network.
-
-                contains 1) list of cellprofiler output filename and corresponding s3 path¨
-                         2) list of wells and sites processed
     """
 
     cellprofilerInputFileListFilePath=Path("./cellprofilerinput/imagefilelist.txt")
@@ -47,7 +46,10 @@ def cp_map(
             local_image_filename:Path=Path("./cellprofilerinput")/filename
             s3bucketname, s3path = s3path.split("/",1)
             # download image from s3
-            s3_client.download_file(s3bucketname, s3path, local_image_filename.absolute())
+            s3client.downloadFile(
+                object_name=s3path, 
+                local_filename=str(local_image_filename.absolute())
+            )
             # write local image file path to cellprofiler input file
             f.write(f"{str(local_image_filename.absolute())}\n")
             # save image file path for later deletion
@@ -81,7 +83,10 @@ def cp_map(
         df.to_parquet(file_parquet)
 
         s3Filename = f"{project_name}/{plate_name}/{imageBatchID}/{file_parquet.name}"
-        s3_client.upload_file(str(file_parquet), os.getenv("S3_BUCKET_NAME"), s3Filename)
+        s3client.uploadFile(
+            file=str(file_parquet),
+            object_name=s3Filename
+        )
 
         # delete both local files
         file_csv.unlink()
@@ -101,12 +106,42 @@ def cp_map(
                 site=int(site[1:]) # strip leading 's', and ensure the rest is an integer
                 well_site_list.append(WellSite(well=well,site=site))
 
-    return Result_cp_map(
+    res=Result_cp_map(
         resultfiles=ret_filepaths,
         wells=well_site_list
-    ).model_dump()
+    )
 
-@app.task(name="cp_reduce",queue="reduce_queue")
+    # write result stuff back to db
+
+    mydb.insertProfileResultBatch(
+        project_name,
+        experiment_name=experiment_name,
+        batchid=imageBatchID,
+        result_file_paths=res.resultfiles,
+        well_site_list=res.wells,
+    )
+
+    status=mydb.checkExperimentProcessingStatus(
+        project_name,
+        experiment_name,
+        get_merged_frames=True
+    )
+
+    print(
+        f"Total sites: {status.total_sites}, " \
+        f"Processed sites: {status.num_processed_sites}, " \
+        f"i.e. done {status.num_processed_sites/status.total_sites*100:.2f}%"
+    )
+
+    for filename,df in status.resultfiles.items():
+        print(filename)
+        print(df.head(1))
+
+    mydb.dumpDatabaseHead()
+
+    print(f"done with {project_name=}, {experiment_name=}, {plate_name=}, {imageBatchID=}")
+
+@rpc.task(name="cp_reduce",queue="reduce_queue")
 def cp_reduce(
     project_name:str,
     plate_name:str,
