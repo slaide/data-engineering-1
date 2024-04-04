@@ -23,4 +23,7 @@ RUN $py3 -m pip install /app/dbi
 RUN useradd -m webfrontend
 USER webfrontend
 
+# without this, the web server will buffer the output and not show it in real-time
+ENV PYTHONUNBUFFERED=1
+
 CMD $py3 main.py
