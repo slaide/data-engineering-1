@@ -1,5 +1,5 @@
 from celery import Celery
-import os
+import os, io
 import typing as tp
 from pathlib import Path
 import pandas as pd
@@ -160,7 +160,7 @@ def cp_map(
 @rpc.task(name="cp_reduce",queue="reduce_queue")
 def cp_reduce(
     project_name:str,
-    plate_name:str,
+    experiment_name:str,
 )->str:
     """
         reduce the results from a plate within a project to a single image file
@@ -174,9 +174,92 @@ def cp_reduce(
             str: path to the reduced file
     """
 
+    exp_status=mydb.checkExperimentProcessingStatus(
+        project_name=project_name,
+        experiment_name=experiment_name
+    )
 
+    experiment_id=mydb.getExperimentID(project_name,experiment_name)
 
-    # TODO lots of python dataframe code
-    ret=f"{BUCKET_NAME}/{project_name}/{plate_name}.res"
+    # get result file locations
+    resultfiles_res=mydb.dbExec(f"""
+        SELECT s3path,filename
+        FROM profile_result_files
+        WHERE profile_resultid IN (
+            SELECT id
+            FROM profile_results
+            WHERE experimentid = {experiment_id}
+        );
+    """)
+    assert type(resultfiles_res)==list
+    resultfiles=[
+        ObjectStorageFileReference(s3path=s3path,filename=filename)
+        for s3path,filename
+        in resultfiles_res
+    ]
+
+    # group files by filename
+    file_list:tp.Dict[str,tp.List[str]]={}
+    for file in resultfiles:
+        if not file.filename in file_list:
+            file_list[file.filename]=[]
+        file_list[file.filename].append(file.s3path)
+
+    # download files and combine them into a single dataframe per filename
+    dataframes:tp.Dict[str,pd.DataFrame]={}
+    
+    for filename,s3paths in file_list.items():
+        if filename=="Experiment.parquet":
+            # this file contains experiment metadata, such as cellprofiler version
+            continue
+        elif filename=="Image.parquet":
+            # this file contains image QC data, which is not relevant for this analysis
+            continue
+        elif filename in ["membrane.parquet","nucleus.parquet"]:
+            # these files contain the actual data
+            pass
+        else:
+            raise ValueError(f"unexpected filename {filename}")
+
+        filename_suffix=Path(filename).suffix
+        print(f"processing {filename}")
+        for s3path in s3paths:
+            # download file
+            print(f"downloading {s3path}")
+
+            tempFile=io.BytesIO()
+
+            # get merged frames from s3 as in-memory file
+            s3client.downloadFileObj(
+                object_name=s3path,
+                fileobj=tempFile,
+            )
+            tempFile.seek(0)
+
+            # read into dataframe, accounting for csv/parquet
+            df=None
+            if filename_suffix==".csv":
+                df=pd.read_csv(tempFile)
+            elif filename_suffix==".parquet":
+                df=pd.read_parquet(tempFile)
+            else:
+                raise ValueError(f"unexpected file extension {filename_suffix} in {filename}")
+            
+            if filename in dataframes:
+                dataframes[filename]=pd.concat([dataframes[filename],df])
+            else:
+                dataframes[filename]=df
+
+        # print dataframe size, header and first 2 rows
+        print(f"filename: {filename}")
+        print(f"shape: {dataframes[filename].shape}")
+        print(f"columns: {dataframes[filename].columns}")
+        print(f"head:\n{dataframes[filename].head(2)}")
+
+    from cell_profile import PlateMetadata
+
+    #PlateMetadata().process()
+
+    ret=f"{BUCKET_NAME}/{project_name}/{experiment_name}.res"
     return ret
 

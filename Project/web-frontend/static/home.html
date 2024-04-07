@@ -105,6 +105,43 @@
     <div id="experimentlist"></div>
 
     <script>
+        function getExperimentResults(event){
+            event.preventDefault()
+            let projectname=document.getElementById("experiment-results-projectname").value
+            let experimentname=document.getElementById("experiment-results-experimentname").value
+
+            let req=new XMLHttpRequest()
+
+            req.open('GET', '/api/get_experiment_results?projectname='+projectname+'&experimentname='+experimentname, true);
+            req.onload=(function(){
+                if(!(this.readyState === 4 && this.status === 200)){
+                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                    return
+                }
+
+                let response=JSON.parse(req.responseText)
+                console.log("got response",req.responseText)
+
+                let resultcontainer=document.getElementById("experiment-result")
+
+                while(resultcontainer.firstChild){
+                    resultcontainer.removeChild(resultcontainer.firstChild)
+                }
+
+                resultcontainer.innerText=req.responseText
+
+            }).bind(req)
+            req.send()
+        }
+    </script>
+    <form>
+        <input type="text" id="experiment-results-projectname" name="projectname" placeholder="projectname">
+        <input type="text" id="experiment-results-experimentname" name="experimentname" placeholder="experimentname">
+        <input type="submit" id="experiment-results-get" value="get results" onclick="getExperimentResults(event)">
+    </form>
+    <div id="experiment-result"></div>
+
+    <script>
         function getExperimentProgress(event){
             event.preventDefault()
             let projectname=document.getElementById("experiment-progress-projectname").value

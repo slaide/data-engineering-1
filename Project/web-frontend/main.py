@@ -126,6 +126,26 @@ def getExperimentProgress():
     ret:str=progress.model_dump_json(exclude={"resultfiles":True})
     return ret,Status.OK
 
+def cp_reduce(*args,**kwargs)->AsyncResult:
+    """
+    wrapper for async call to cp_reduce
+
+    returns a handle to the async result, though the actual result is None
+    """
+
+    res:AsyncResult=mydb.celery_rpc.send_task("cp_reduce",args=args,kwargs=kwargs,queue="reduce_queue")
+    return res
+
+@app.route("/api/get_experiment_results",methods=["GET"])
+def getExperimentResults():
+    projectname=request.args.get("projectname",type=str)
+    experimentname=request.args.get("experimentname",type=str)
+    assert projectname is not None
+    assert experimentname is not None
+    results=cp_reduce(projectname,experimentname)
+    res={"resultfiles":results.get()}
+    return jsonify(res),Status.OK
+
 @app.route('/api/upload', methods=['POST'])
 def uploadFile():
     # check if the post request has the file part
@@ -142,29 +162,46 @@ def uploadFile():
     experiment_name=Path(experiment["output_path"]).name
     experiment["experiment_name"]=experiment_name
 
-    imageFileList=mydb.insertExperimentMetadata(
+    imageSets=mydb.insertExperimentMetadata(
         experiment,
         coordinates,
         images=request.files.getlist("image_files"),
         image_s3_bucketname=BUCKET_NAME
     )
 
-    batch_id=mydb.getProcessingBatchID(experiment["project_name"],experiment_name)
+    imageFileList=[]
+    for setName,imageSet in imageSets.items():
+        batch_id=mydb.getProcessingBatchID(experiment["project_name"],experiment_name)
 
-    cp_map(
-        [
-            ObjectStorageFileReference(
-                filename=Path(image.real_filename).name,
-                s3path=image.storage_filename,
-            ).model_dump()
-            for image
-            in imageFileList
-        ],
-        project_name=experiment["project_name"],
-        experiment_name=experiment_name,
-        plate_name=experiment["plate_name"],
-        imageBatchID=batch_id,
-    )
+        print(
+            "registering batch with id",batch_id,
+            "for experiment",experiment_name,
+            "in project",experiment["project_name"],
+            "with",len(imageSet),"images"
+        )
+        
+        mydb.registerBatch(
+            project_name=experiment["project_name"],
+            experiment_name=experiment_name,
+            batchid=batch_id
+        )
+
+        imageFileList.extend(imageSet)
+
+        cp_map(
+            [
+                ObjectStorageFileReference(
+                    filename=Path(image.real_filename).name,
+                    s3path=image.storage_filename,
+                ).model_dump()
+                for image
+                in imageSet
+            ],
+            project_name=experiment["project_name"],
+            experiment_name=experiment_name,
+            plate_name=experiment["plate_name"],
+            imageBatchID=batch_id,
+        )
 
     # redirect to display last uploaded file
     return jsonify(dict(

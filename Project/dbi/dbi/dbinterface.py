@@ -20,6 +20,7 @@ from werkzeug.utils import secure_filename
 pd.set_option('display.width', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_colwidth', None)
+pd.set_option('display.max_rows', None)
 
 MARIADB_USER_USERNAME=os.getenv('MARIADB_USER_USERNAME') ; assert MARIADB_USER_USERNAME is not None
 MARIADB_USER_PASSWORD=os.getenv('MARIADB_USER_PASSWORD') or '' # password may be empty
@@ -33,16 +34,28 @@ DBNAME="morphology_information"
 @dataclass(repr=True,frozen=False)
 class ImageMetadata:
     storage_filename:str
+    """ filename of the image as it is stored in the object storage """
     real_filename:str
+    """ filename of the image as it came out of the microscope """
     wellname:str
+    """ string representation of the well name """
     well_id:int
+    """ the id of the well in the database """
     site:int
+    """ _sX part of the image name """
     site_x:int
+    """ _xX part of the image name """
     site_y:int
+    """ _yX part of the image name """
     site_z:int
+    """ _zX part of the image name (defaults to 0 if not present) """
     site_t:int
+    """ mock time component of the image name """
     channelname:str
+    """ _<channelname>$ (trailing) part of the image name """
     channel_id:int
+    """ the id of the channel in the database """
+
     coord_x_mm:tp.Optional[float]
     coord_y_mm:tp.Optional[float]
     coord_z_um:tp.Optional[float]
@@ -561,7 +574,18 @@ class DB:
         coordinates:pd.DataFrame,
         images:tp.List[FileStorage],
         image_s3_bucketname:str,
-    )->tp.List[ImageMetadata]:
+    )->tp.Dict[str,tp.List[ImageMetadata]]:
+        """
+            insert experiment metadata into the database
+
+            :param experiment: the experiment metadata
+            :param coordinates: the coordinates of each well in the plate
+            :param images: the images to upload
+            :param image_s3_bucketname: the bucket name to upload the images to
+
+            :returns: a list of image sets, where each image is translated into an ImageMetadata object
+                i.e. returns something like splitIntoSets([ImageMetadata(image) for image in images])
+        """
 
         # create experiment if none exists with the name
         proj_name:str=experiment["project_name"]
@@ -667,7 +691,13 @@ class DB:
 
         # create experiment wells
         for wellname in experiment["well_list"]:
-            res=self.dbExec(f"select id from platetype_wells where well_name='{wellname}' and platetypeid={plate_type_id};")
+            res=self.dbExec(f"""
+                select id
+                from platetype_wells
+                where well_name='{wellname}'
+                    and platetypeid={plate_type_id};
+            """)
+
             assert type(res)==list
             if len(res)==0:
                 raise ValueError(f"well name {wellname} not found in database")
@@ -676,7 +706,12 @@ class DB:
             num_sites=grid_num_x*grid_num_y*grid_num_z
 
             if not experiment_already_exists:
-                self.dbExec(self.dbExperimentWells.insert(),{"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line})
+                res=self.dbExec(
+                    self.dbExperimentWells.insert(),
+                    {"experimentid":exp_id,"wellid":well_id,"cell_line":cell_line}
+                )
+                assert type(res)==list
+                experiment_wellid:int=res[0][0]
 
                 for site_id in range(num_sites):
                     site_id+=1 # sites are 1-indexed
@@ -686,7 +721,7 @@ class DB:
                     site_t=(site_id//(grid_num_x*grid_num_y*grid_num_z))%grid_num_t
 
                     self.dbExec(self.dbExperimentWellSites.insert(),{
-                        "experiment_wellid":exp_id,
+                        "experiment_wellid":experiment_wellid,
                         "site_id":site_id,
                         "site_x":site_x,
                         "site_y":site_y,
@@ -739,7 +774,7 @@ class DB:
 
         # insert image metadata
         imageInsertionList=[]
-        imageMetadataList=[]
+        imageMetadataList:tp.List[ImageMetadata]=[]
         for file in images:
             # If the user does not select a file, the browser may submit an empty file without a filename.
             if file.filename == '':
@@ -780,10 +815,23 @@ class DB:
 
         print(f"inserting {len(imageMetadataList)} images")
         self.dbExec(self.dbImages.insert(),imageInsertionList)
+
+        imageset:tp.Dict[str,tp.List[ImageMetadata]]={}
+        for image in imageMetadataList:
+            image_loc_str=f"{image.wellname}:{image.site}"
+            if image_loc_str not in imageset:
+                imageset[image_loc_str]=[]
+            imageset[image_loc_str].append(image)
+
+        for site,list_of_images in imageset.items():
+            print("----------")
+            print(site)
+            for image in list_of_images:
+                print(image.storage_filename)
         
         self.dumpDatabaseHead()
 
-        return imageMetadataList
+        return imageset
     
     def registerBatch(self,
         project_name:str,
@@ -793,9 +841,23 @@ class DB:
     ):
         """
         register a batch in the database
+
+        if batch already exists, and current status is the initial_status, this call is ignored (otherwise raises an error on duplicate call)
         """
 
         experiment_id=self.getExperimentID(project_name,experiment_name)
+
+        # check if batch is already registered
+        res=self.dbExec(f"""
+            select id,status from profile_results
+            where experimentid={experiment_id}
+            and batchid={batchid};
+        """)
+        assert type(res)==list
+        if len(res)>0:
+            if res[0][1]!=initial_status:
+                raise ValueError(f"batch {batchid} in experiment {experiment_name} already exists with status {res[0][1]}")
+            return
 
         # create profile result batch
         res=self.dbExec(self.dbProfileResults.insert(),{
@@ -846,6 +908,16 @@ class DB:
                 """)
             assert type(res)==list
             if len(res)==0:
+                # get all sites (with name) and site ids for this experiment
+                res=self.dbExec(f"""
+                    select pw.well_name,ews.site_id from experiment_wells ew
+                    join platetype_wells pw on ew.wellid=pw.id
+                    join experiments e on ew.experimentid=e.id
+                    join experiment_well_sites ews on ew.id=ews.experiment_wellid
+                    where e.id={experiment_id};
+                """,as_pd=True)
+                assert type(res)==pd.DataFrame
+                print(res)
                 raise ValueError(f"well {well} site {site} not found in database")
             well_site_id=res[0][0]
 
