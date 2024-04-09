@@ -23,21 +23,22 @@ WORKDIR /home/pharmbio
 RUN virtualenv venv
 ENV py3=venv/bin/python3
 
-RUN $py3 -m pip install celery matplotlib numpy
-# numpy needs to already be installed before cellprofiler gets installed
-RUN $py3 -m pip install mariadb "SQLAlchemy<2.0" "Cython<3.0" cellprofiler==4.2.6
+RUN $py3 -m pip install celery matplotlib numpy==1.24
+# numpy needs to already be installed before cellprofiler gets installed, it is mentioned a second time to fix the version
+RUN $py3 -m pip install numpy==1.24 mariadb "SQLAlchemy<2.0" "Cython<3.0" cellprofiler==4.2.6
 RUN $py3 -m pip install pandas pyarrow tqdm mariadb "SQLAlchemy<2.0" mysql-connector-python boto3
-
-COPY tasks.py tasks.py
 
 COPY cellprofilerinput /home/pharmbio/cellprofilerinput
 RUN mkdir -p /home/pharmbio/cellprofileroutput
 
 COPY dbi dbi
 RUN $py3 -m pip install ./dbi
+COPY cell-profile cell-profile
+RUN $py3 -m pip install ./cell-profile
+
+COPY tasks.py tasks.py
 
 # switch to non-root user
 # USER pharmbio
 
-CMD $py3 -m celery -A tasks worker --queues=map_queue --concurrency 1
-# --loglevel=INFO
+CMD $py3 -m celery -A tasks worker --queues=map_queue --concurrency 1 --loglevel=WARNING

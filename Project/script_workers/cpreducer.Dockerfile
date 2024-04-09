@@ -23,16 +23,15 @@ ENV py3=venv/bin/python3
 RUN $py3 -m pip install --upgrade pip
 RUN $py3 -m pip install polars pandas pyarrow celery matplotlib numpy "pandas>=1.5.3,<1.6" scipy tqdm mariadb SQLAlchemy==2.0.22 mysql-connector-python boto3
 
-COPY tasks.py tasks.py
-
-COPY cell-profile cell-profile
-RUN $py3 -m pip install ./cell-profile
 COPY dbi dbi
 RUN $py3 -m pip install ./dbi
+COPY cell-profile cell-profile
+RUN $py3 -m pip install ./cell-profile
+
+COPY tasks.py tasks.py
 
 # switch to non-root user
 RUN useradd -m celeryworker
-USER celeryworker
+# USER celeryworker
 
-CMD $py3 -m celery -A tasks worker --queues reduce_queue --concurrency 1
-# --loglevel=INFO
+CMD $py3 -m celery -A tasks worker --queues reduce_queue --concurrency 1 --loglevel=WARNING

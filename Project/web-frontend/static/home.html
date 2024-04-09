@@ -9,277 +9,421 @@
     <iframe id="dummyframe" name="dummyframe" style="display:none;"></iframe>
 
     <script>
-        function getprojects(event){
-            event.preventDefault()
-            let req=new XMLHttpRequest()
-            req.open('GET', '/api/get_projects', true);
-            req.onload=(function(){
-                if(!(this.readyState === 4 && this.status === 200)){
-                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
-                    return
-                }
-
-                let response=JSON.parse(req.responseText)
-
-                let projectlist=response.projects
-
-                let projectliststr=""
-                for(let project of projectlist){
-                    projectliststr+="<li>"+project+"</li>"
-                }
-
-                let projectlistelement=document.createElement("ul")
-                projectlistelement.innerHTML=projectliststr
-                //  add callback to trigger experiment list on click
-                projectlistelement.addEventListener("click", function(event){
-                    let projectname=event.target.innerText
-                    document.getElementById("projectname").value=projectname
-                    document.getElementById("get-experiments").click()
-                })
-
-                let projectlistcontainer=document.getElementById("projectlist")
-
-                while(projectlistcontainer.firstChild){
-                    projectlistcontainer.removeChild(projectlistcontainer.firstChild)
-                }
-
-                projectlistcontainer.appendChild(projectlistelement)
-
-            }).bind(req)
-            req.send()
-        }
-    </script>
-    <form>
-        <input type="submit" value="get projects" onclick="getprojects(event)">
-    </form>
-    <div id="projectlist"></div>
-
-    <script>
-        function getexperiments(event){
-            event.preventDefault()
-            let projectname=document.getElementById("projectname").value
-            let req=new XMLHttpRequest()
-            req.open('GET', '/api/get_experiments?projectname='+projectname, true);
-            req.onload=(function(){
-                if(!(this.readyState === 4 && this.status === 200)){
-                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
-                    return
-                }
-
-                let response=JSON.parse(req.responseText)
-
-                let experimentlist=response.experiments
-
-                let experimentliststr=""
-                for(let experiment of experimentlist){
-                    experimentliststr+="<li>"+experiment+"</li>"
-                }
-
-                let experimentlistelement=document.createElement("ul")
-                experimentlistelement.innerHTML=experimentliststr
-                experimentlistelement.addEventListener("click", function(event){
-                    let experimentname=event.target.innerText
-                    let projectname=document.getElementById("projectname").value
-                    document.getElementById("experiment-progress-projectname").value=projectname
-                    document.getElementById("experiment-progress-experimentname").value=experimentname
-                    document.getElementById("experiment-progress").innerText="loading.."
-                    document.getElementById("experiment-progress-get").click()
-                })
-
-                let experimentlistcontainer=document.getElementById("experimentlist")
-
-                while(experimentlistcontainer.firstChild){
-                    experimentlistcontainer.removeChild(experimentlistcontainer.firstChild)
-                }
-
-                experimentlistcontainer.appendChild(experimentlistelement)
-
-            }).bind(req)
-            req.send()
-        }
-    </script>
-    <form>
-        <input type="text" id="projectname" name="projectname" placeholder="projectname">
-        <input type="submit" id="get-experiments" value="get experiments" onclick="getexperiments(event)">
-    </form>
-    <div id="experimentlist"></div>
-
-    <script>
-        function getExperimentResults(event){
-            event.preventDefault()
-            let projectname=document.getElementById("experiment-results-projectname").value
-            let experimentname=document.getElementById("experiment-results-experimentname").value
-
-            let req=new XMLHttpRequest()
-
-            req.open('GET', '/api/get_experiment_results?projectname='+projectname+'&experimentname='+experimentname, true);
-            req.onload=(function(){
-                if(!(this.readyState === 4 && this.status === 200)){
-                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
-                    return
-                }
-
-                let response=JSON.parse(req.responseText)
-                console.log("got response",req.responseText)
-
-                let resultcontainer=document.getElementById("experiment-result")
-
-                while(resultcontainer.firstChild){
-                    resultcontainer.removeChild(resultcontainer.firstChild)
-                }
-
-                resultcontainer.innerText=req.responseText
-
-            }).bind(req)
-            req.send()
-        }
-    </script>
-    <form>
-        <input type="text" id="experiment-results-projectname" name="projectname" placeholder="projectname">
-        <input type="text" id="experiment-results-experimentname" name="experimentname" placeholder="experimentname">
-        <input type="submit" id="experiment-results-get" value="get results" onclick="getExperimentResults(event)">
-    </form>
-    <div id="experiment-result"></div>
-
-    <script>
-        function getExperimentProgress(event){
-            event.preventDefault()
-            let projectname=document.getElementById("experiment-progress-projectname").value
-            let experimentname=document.getElementById("experiment-progress-experimentname").value
-
-            let req=new XMLHttpRequest()
-            req.open('GET', '/api/get_experiment_progress?projectname='+projectname+'&experimentname='+experimentname, true);
-            req.onload=(function(){
-                if(!(this.readyState === 4 && this.status === 200)){
-                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
-                    return
-                }
-
-                let response=JSON.parse(req.responseText)
-
-                let progresscontainer=document.getElementById("experiment-progress")
-
-                while(progresscontainer.firstChild){
-                    progresscontainer.removeChild(progresscontainer.firstChild)
-                }
-
-                progresscontainer.innerText=req.responseText
-
-            }).bind(req)
-            req.send()
-        }
-    </script>
-    <form>
-        <input type="text" id="experiment-progress-projectname" name="projectname" placeholder="projectname">
-        <input type="text" id="experiment-progress-experimentname" name="experimentname" placeholder="experimentname">
-        <input type="submit" id="experiment-progress-get" value="get progress" onclick="getExperimentProgress(event)">
-    </form>
-    <div id="experiment-progress"></div>
-
-    <h1>Upload new File</h1>
-    <style>
-        .uploadStatusText{
-            padding-left:2em;
-        }
-        #uploadProgressDisplay{
-            display:grid;
-            grid-template-columns:auto 1fr;
-        }
-    </style>
-    <script>
-        function uploadFiles(event){
-			event.preventDefault()
-			event.currentTarget.parentElement.reportValidity()
-
-            let uploadProgressDisplay=document.getElementById("uploadProgressDisplay")
-            let imageFileTarget=document.getElementById("imageFileSelection")
-            let imageCoordinateFileTarget=document.getElementById("imageCoordinateFile")
-            let experimentInformationFileTarget=document.getElementById("experimentInformationFile")
-
-			if(imageFileTarget.files.length=0)
-				window.alert("no image files");
-            if(imageCoordinateFileTarget.files.length==0)
-                window.alert("no coordinate file");
-            if(experimentInformationFileTarget.files.length==0)
-                window.alert("no metadata file");
-
-            while(uploadProgressDisplay.firstChild){
-                uploadProgressDisplay.removeChild(uploadProgressDisplay.firstChild)
+        function removechildren(element){
+            while(element.firstChild){
+                element.removeChild(element.firstChild)
             }
-
-            let numFiles=imageFileTarget.files.length+2/*metadata file and coordinate file*/
-
-            let formData = new FormData();
-            for(let imagefile of imageFileTarget.files)
-                formData.append('image_files', imagefile);
-            for(let imagefile of experimentInformationFileTarget.files)
-                formData.append('experiment_file', imagefile);
-            for(let imagefile of imageCoordinateFileTarget.files)
-                formData.append('coordinate_file', imagefile);
-
-            let req=new XMLHttpRequest()
-            req.open('POST', '/api/upload', true);
-
-            let newElement=document.createElement("div")
-            newElement.innerText="somefiles"
-            uploadProgressDisplay.appendChild(newElement)
-
-            let statusElement=document.createElement("t")
-            statusElement.classList.add("uploadStatusText")
-            statusElement.innerText="uploading.."
-            uploadProgressDisplay.appendChild(statusElement)
-
-            req.onabort=()=>{
-                console.log("request aborted")
-                statusElement.innerText="upload aborted"
-            }
-            req.onerror=()=>{
-                console.log("request failed")
-                statusElement.innerText="upload error"
-            }
-            req.onload=(function(){
-                if(!(this.readyState === 4 && this.status === 200)){
-                    console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
-                    return
-                }
-
-                let response=JSON.parse(req.responseText)
-                let downloadstr=""
-                for(let imagefileresult of response.imagefiles){
-                    let downloadpath=imagefileresult.downloadpath
-                    let filename=imagefileresult.filename
-                    downloadstr+="<a href='"+downloadpath+"'>download "+filename+"</a><br>"
-                }
-                statusElement.innerHTML="upload of "+numFiles+" files done, with msg: "+response.info+"<br>"+downloadstr
-            }).bind(req)
-
-            req.upload.onprogress = function(event) {
-                if (event.lengthComputable) {
-                    var percentComplete = (event.loaded / event.total) * 100;
-                    statusElement.innerHTML="upload of "+numFiles+" files "+percentComplete.toFixed(2)+"% done"
-                }
-            };
-
-            req.send(formData)
         }
     </script>
 
     <style>
-        #inputform{
-            display:grid;
-            grid-template-columns: auto 1fr;
+        .clickable{
+            cursor:pointer;
+        }
+        .clickable:hover{
+            text-decoration: underline;
+        }
+        input[type="submit"]{
+            cursor:pointer;
         }
     </style>
-    <form id="inputform">
-        <label for="imageFileSelection">image files</label>
-        <input id="imageFileSelection" type="file" name="images" required multiple accept=".tif,.tiff,.png">
-        <label for="imageCoordinateFile">image coordinate file</label>
-        <input id="imageCoordinateFile" type="file" name="coordinates" required accept=".csv">
-        <label for="experimentInformationFile">experiment metadata file</label>
-        <input id="experimentInformationFile" type="file" name="metadata" required accept=".json">
-        <input id="submitExperimentButton" type="submit" value="Upload" onclick="uploadFiles(event)">
-    </form>
 
-    <div id="uploadProgressDisplay"></div>
+    <div>
+        <h1>Project List</h1>
+        <script>
+            function getprojects(event){
+                event.preventDefault()
+                let req=new XMLHttpRequest()
+                req.open('GET', '/api/get_projects', true);
+                req.onload=(function(){
+                    if(!(this.readyState === 4 && this.status === 200)){
+                        console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                        return
+                    }
+
+                    let response=JSON.parse(req.responseText)
+
+                    let projectlist=response.projects
+
+                    let projectliststr=""
+                    for(let project of projectlist){
+                        projectliststr+="<li class='clickable'>"+project+"</li>"
+                    }
+
+                    let projectlistelement=document.createElement("ul")
+                    projectlistelement.innerHTML=projectliststr
+                    //  add callback to trigger experiment list on click
+                    projectlistelement.addEventListener("click", function(event){
+                        let projectname=event.target.innerText
+                        document.getElementById("projectname").value=projectname
+                        document.getElementById("get-experiments").click()
+                    })
+
+                    let projectlistcontainer=document.getElementById("projectlist")
+                    removechildren(projectlistcontainer)
+
+                    projectlistcontainer.appendChild(projectlistelement)
+
+                }).bind(req)
+                req.send()
+            }
+        </script>
+        <form>
+            <input id="get-project-button" type="submit" value="get project list" onclick="getprojects(event)">
+        </form>
+        <div>
+            <h2>Projects (click project to see its experiments)</h2>
+            <div id="projectlist"></div>
+        </div>
+    </div>
+
+    <div>
+        <h1>Experiment List</h1>
+        <script>
+            function getexperiments(event){
+                event.preventDefault()
+                let projectname=document.getElementById("projectname").value
+                let req=new XMLHttpRequest()
+                req.open('GET', '/api/get_experiments?projectname='+projectname, true);
+                req.onload=(function(){
+                    if(!(this.readyState === 4 && this.status === 200)){
+                        console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                        return
+                    }
+
+                    let response=JSON.parse(req.responseText)
+
+                    let experimentlist=response.experiments
+
+                    let experimentliststr=""
+                    for(let experiment of experimentlist){
+                        experimentliststr+="<li class='clickable'>"+experiment+"</li>"
+                    }
+
+                    let experimentlistelement=document.createElement("ul")
+                    experimentlistelement.innerHTML=experimentliststr
+                    experimentlistelement.addEventListener("click", function(event){
+                        let experimentname=event.target.innerText
+                        let projectname=document.getElementById("projectname").value
+                        document.getElementById("experiment-progress-projectname").value=projectname
+                        document.getElementById("experiment-progress-experimentname").value=experimentname
+                        document.getElementById("experiment-progress-get").click()
+                    })
+
+                    let experimentlistcontainer=document.getElementById("experimentlist")
+                    removechildren(experimentlistcontainer)
+
+                    experimentlistcontainer.appendChild(experimentlistelement)
+
+                }).bind(req)
+                req.send()
+            }
+        </script>
+        <form>
+            <label for="projectname">project name:</label>
+            <input type="text" id="projectname" name="projectname" placeholder="projectname">
+
+            <input type="submit" id="get-experiments" value="get experiments for project" onclick="getexperiments(event)">
+        </form>
+        <div>
+            <h2>Experiments (click experiment to see its progress)</h2>
+            <div id="experimentlist"></div>
+        </div>
+    </div>
+
+    <div>
+        <h1>Experiment Progress</h1>
+
+        <script>
+            function getExperimentProgress(event){
+                event.preventDefault()
+                let projectname=document.getElementById("experiment-progress-projectname").value
+                let experimentname=document.getElementById("experiment-progress-experimentname").value
+
+                let req=new XMLHttpRequest()
+                req.open('GET', '/api/get_experiment_progress?projectname='+projectname+'&experimentname='+experimentname, true);
+                req.onload=(function(){
+                    if(!(this.readyState === 4 && this.status === 200)){
+                        console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                        return
+                    }
+
+                    let response=JSON.parse(req.responseText)
+
+                    let progressbar=document.getElementById("experiment-progress-bar")
+                    progressbar.style.setProperty("--num-total-sites", response.total_sites)
+                    progressbar.style.setProperty("--num-processed-sites", response.num_processed_sites)
+                    // use format string to indicate progress, with number of sites out of total and percentage of total completed so far (percentage in paranthesis)
+                    progressbar.innerText=response.num_processed_sites+"/"+response.total_sites+" site completed ("+Math.round(response.num_processed_sites/response.total_sites*100)+"%)"
+
+                    let progressbatchtable=document.getElementById("experiment-progress-batch-table")
+                    removechildren(progressbatchtable)
+                    // for each item in response.batchinformation, create a table row with entries batchid, start_time, end_time, status
+                    let batchtablestr="<table><tr><th>batchid</th><th>start_time</th><th>end_time</th><th>status</th></tr>"
+                    for(let batch of response.batch_information){
+                        batchtablestr+="<tr><td>"+batch.batchid+"</td><td>"+batch.start_time+"</td><td>"+batch.end_time+"</td><td>"+batch.status+"</td></tr>"
+                    }
+                    batchtablestr+="</table>"
+                    progressbatchtable.innerHTML=batchtablestr
+
+                    let progresswellsitetable=document.getElementById("experiment-progress-well-site-table")
+                    removechildren(progresswellsitetable)
+                    // response.wells is a dict, where keys are names of wells, and items are site information, with each of these also being a dict with key siteid and value status (all site informations have the same number of sites, with identical site ids)
+                    // create a table where each row is a site id, and each column is a well, with the status of the site in the well as the content
+                    let wells=Object.keys(response.wells)
+                    let sites=Object.keys(response.wells[wells[0]])
+                    let wellsitetablestr="<table><tr><th>siteid</th>"
+                    for(let well of wells){
+                        wellsitetablestr+="<th>"+well+"</th>"
+                    }
+                    wellsitetablestr+="</tr>"
+                    for(let site of sites){
+                        wellsitetablestr+="<tr><td>"+site+"</td>"
+                        for(let well of wells){
+                            wellsitetablestr+="<td>"+response.wells[well][site]+"</td>"
+                        }
+                        wellsitetablestr+="</tr>"
+                    }
+                    wellsitetablestr+="</table>"
+                    progresswellsitetable.innerHTML=wellsitetablestr
+
+                }).bind(req)
+                req.send()
+            }
+        </script>
+        <form>
+            <label for="experiment-progress-projectname">project name:</label>
+            <input type="text" id="experiment-progress-projectname" name="projectname" placeholder="projectname">
+
+            <label for="experiment-progress-experimentname">experiment name:</label>
+            <input type="text" id="experiment-progress-experimentname" name="experimentname" placeholder="experimentname">
+
+            <input type="submit" id="experiment-progress-get" value="get progress" onclick="getExperimentProgress(event)">
+        </form>
+        <div id="experiment-progress">
+            <h2>Experiment Progress</h2>
+
+            <style>
+                #experiment-progress-bar{
+                    --num-total-sites:10;
+                    --num-processed-sites:2;
+
+                    --perc-completed: calc( var(--num-processed-sites) / var(--num-total-sites) * 100%);
+                    background:linear-gradient(to right, lightblue var(--perc-completed), white var(--perc-completed));
+                    width:100%;
+                    height:1.5em;
+                    border:1px solid black;
+                    text-align: center;
+                }
+            </style>
+
+            <div id="experiment-progress-bar"></div>
+            <div id="experiment-progress-batch-table"></div>
+            <div id="experiment-progress-well-site-table"></div>
+        </div>
+    </div>
+
+    <div>
+        <h1>Experiment Results</h1>
+
+        <script>
+            function getExperimentResults(event){
+                event.preventDefault()
+
+                let projectname=document.getElementById("experiment-results-projectname").value
+                let experimentname=document.getElementById("experiment-results-experimentname").value
+
+                let req=new XMLHttpRequest()
+
+                req.open('GET', '/api/get_experiment_results?projectname='+projectname+'&experimentname='+experimentname, true);
+                req.onload=(function(){
+                    if(!(this.readyState === 4 && this.status === 200)){
+                        console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                        return
+                    }
+
+                    let response=JSON.parse(req.responseText)
+                    console.log("got response",req.responseText)
+
+                    let resultcontainer=document.getElementById("experiment-result")
+                    removechildren(resultcontainer)
+
+                    for(let file of response.resultfiles){
+                        let downloadelement=document.createElement("a")
+                        downloadelement.href=file.download
+                        downloadelement.innerText="download "+file.filename
+                        resultcontainer.appendChild(downloadelement)
+
+                        // also offer button to display the file inside an iframe instead
+                        let displayelement=document.createElement("button")
+                        displayelement.innerText="display "+file.filename
+
+                        let display_src=file.display_src
+                        displayelement.addEventListener("click", function(event){
+                            event.preventDefault()
+
+                            let experiment_result_plot_iframe=document.getElementById("experiment-result-plot")
+                            experiment_result_plot_iframe.src=this
+                        }.bind(display_src))
+                        resultcontainer.appendChild(displayelement)
+                    }
+                }).bind(req)
+                req.send()
+            }
+        </script>
+        <form>
+            <label for="experiment-results-projectname">project name:</label>
+            <input type="text" id="experiment-results-projectname" name="projectname" placeholder="projectname">
+
+            <label for="experiment-results-experimentname">experiment name:</label>
+            <input type="text" id="experiment-results-experimentname" name="experimentname" placeholder="experimentname">
+
+            <input type="submit" id="experiment-results-get" value="get results" onclick="getExperimentResults(event)">
+        </form>
+        <div>
+            <h2>Experiment results (as plot)</h2>
+            <div id="experiment-result"></div>
+            <style>
+                #experiment-result-plot{
+                    width:800px;
+                    height:600px;
+                }
+            </style>
+            <iframe id="experiment-result-plot"></iframe>
+        </div>
+    </div>
+
+    <div>
+        <h1>Upload New Data</h1>
+        <p>note: uploading new data to an existing experiment is allowed. compound layout, coordinates, metadata will not be updated but upload is still required. behavior on duplicate image upload is undefined.</p>
+        <style>
+            .uploadStatusText{
+                padding-left:2em;
+            }
+            #uploadProgressDisplay{
+                display:grid;
+                grid-template-columns:auto 1fr;
+            }
+        </style>
+        <script>
+            function uploadFiles(event){
+                event.preventDefault()
+                event.currentTarget.parentElement.reportValidity()
+
+                let uploadProgressDisplay=document.getElementById("uploadProgressDisplay")
+                let imageFileTarget=document.getElementById("imageFileSelection")
+                let imageCoordinateFileTarget=document.getElementById("imageCoordinateFile")
+                let compoundLayoutFileTarget=document.getElementById("compoundLayoutFile")
+                let experimentInformationFileTarget=document.getElementById("experimentInformationFile")
+
+                if(imageFileTarget.files.length=0){
+                    window.alert("no image files");
+                    return;
+                }
+                if(imageCoordinateFileTarget.files.length==0){
+                    window.alert("no coordinate file");
+                    return;
+                }
+                if(experimentInformationFileTarget.files.length==0){
+                    window.alert("no metadata file");
+                    return;
+                }
+                if(compoundLayoutFileTarget.files.length==0){
+                    window.alert("no compound layout file");
+                    return;
+                }
+
+                while(uploadProgressDisplay.firstChild){
+                    uploadProgressDisplay.removeChild(uploadProgressDisplay.firstChild)
+                }
+
+                let numFiles=imageFileTarget.files.length+3/*metadata file and coordinate file and compound layout file*/
+
+                let formData = new FormData();
+                for(let imagefile of imageFileTarget.files)
+                    formData.append('image_files', imagefile);
+                for(let imagefile of experimentInformationFileTarget.files)
+                    formData.append('experiment_file', imagefile);
+                for(let imagefile of imageCoordinateFileTarget.files)
+                    formData.append('coordinate_file', imagefile);
+                for(let compoundLayoutFile of compoundLayoutFileTarget.files)
+                    formData.append('compound_layout_file', compoundLayoutFile);
+
+                let req=new XMLHttpRequest()
+                req.open('POST', '/api/upload', true);
+
+                let newElement=document.createElement("div")
+                newElement.innerText="somefiles"
+                uploadProgressDisplay.appendChild(newElement)
+
+                let statusElement=document.createElement("t")
+                statusElement.classList.add("uploadStatusText")
+                statusElement.innerText="uploading.."
+                uploadProgressDisplay.appendChild(statusElement)
+
+                req.onabort=()=>{
+                    console.log("request aborted")
+                    statusElement.innerText="upload aborted"
+                }
+                req.onerror=()=>{
+                    console.log("request failed")
+                    statusElement.innerText="upload error"
+                }
+                req.onload=(function(){
+                    if(!(this.readyState === 4 && this.status === 200)){
+                        console.error("request failed"+this.readyState+" "+this.status+". with message: "+req.responseText)
+                        return
+                    }
+
+                    let response=JSON.parse(req.responseText)
+                    let downloadstr=""
+                    for(let imagefileresult of response.imagefiles){
+                        let downloadpath=imagefileresult.downloadpath
+                        let filename=imagefileresult.filename
+                        downloadstr+="<a href='"+downloadpath+"'>download "+filename+"</a><br>"
+                    }
+                    statusElement.innerHTML="upload of "+numFiles+" files done, with msg: "+response.info+"<br>"+downloadstr
+                }).bind(req)
+
+                req.upload.onprogress = function(event) {
+                    if (event.lengthComputable) {
+                        var percentComplete = (event.loaded / event.total) * 100;
+                        let status_html="upload of "+numFiles+" files "+percentComplete.toFixed(2)+"% done"
+                        if(event.loaded == event.total){
+                            status_html+=". waiting for server to forward image files to object storage.."
+                        }
+                        statusElement.innerHTML=status_html
+                    }
+                };
+
+                req.send(formData)
+            }
+        </script>
+
+        <style>
+            #inputform{
+                display:grid;
+                grid-template-columns: auto 1fr;
+            }
+        </style>
+        <form id="inputform">
+            <label for="imageFileSelection">image files</label>
+            <input id="imageFileSelection" type="file" name="images" required multiple accept=".tif,.tiff,.png">
+
+            <label for="imageCoordinateFile">image coordinate file</label>
+            <input id="imageCoordinateFile" type="file" name="coordinates" required accept=".csv">
+
+            <label for="experimentInformationFile">experiment metadata file</label>
+            <input id="experimentInformationFile" type="file" name="coordinates" required accept=".json">
+
+            <label for="compoundLayoutFile">compound layout file</label>
+            <input id="compoundLayoutFile" type="file" name="compoundlayout" required accept=".csv">
+
+            <input id="submitExperimentButton" type="submit" value="Upload" onclick="uploadFiles(event)">
+        </form>
+
+        <h2>data upload status</h2>
+        <div id="uploadProgressDisplay"></div>
+    </div>
 </body>
 </html>

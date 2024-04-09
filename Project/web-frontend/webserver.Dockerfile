@@ -15,9 +15,13 @@ ENV py3=venv/bin/python3
 RUN $py3 -m pip install --upgrade pip
 RUN $py3 -m pip install celery tqdm pandas pyarrow numpy flask==3.0.2 werkzeug mariadb SQLAlchemy==2.0.22 mysql-connector-python boto3==1.34.72 boto3-stubs==1.34.72
 
-COPY . /app/
+COPY dbi dbi
+RUN $py3 -m pip install ./dbi
+COPY cell-profile cell-profile
+RUN $py3 -m pip install ./cell-profile
 
-RUN $py3 -m pip install /app/dbi
+COPY main.py main.py
+COPY static static
 
 # switch to non-root user
 RUN useradd -m webfrontend

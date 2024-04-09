@@ -10,7 +10,7 @@ import io
 from dataclasses import dataclass
 
 from celery.result import AsyncResult
-from dbi import DB, BUCKET_NAME, S3Client, ObjectStorageFileReference
+from dbi import DB, BUCKET_NAME, S3Client, ObjectStorageFileReference, ImageMetadata
 
 mydb=DB()
 s3client=S3Client()
@@ -88,6 +88,17 @@ def download_file(bucket:str, filename:str):
     response.headers['Content-Disposition'] = f'attachment; filename={filename}'
     return response
 
+@app.route('/serve/<bucket>/<path:filename>')
+def serve_s3_file(bucket:str, filename:str):
+    # download file from s3 and serve it (NOT as download!)
+    file_contents=io.BytesIO()
+    s3client.handle.download_fileobj(Bucket=bucket, Key=filename, Fileobj=file_contents)
+    file_contents.seek(0)
+    mimetype=get_file_mimetype(filename)
+    response=make_response(file_contents.read())
+    response.headers["Content-Type"]=mimetype
+    return response,Status.OK
+
 @app.route("/",methods=["GET"])
 def serveHome():
     return serveStaticFile("home.html")
@@ -133,7 +144,7 @@ def cp_reduce(*args,**kwargs)->AsyncResult:
     returns a handle to the async result, though the actual result is None
     """
 
-    res:AsyncResult=mydb.celery_rpc.send_task("cp_reduce",args=args,kwargs=kwargs,queue="reduce_queue")
+    res:AsyncResult=mydb.celery_tasks.send_task("cp_reduce",args=args,kwargs=kwargs,queue="reduce_queue")
     return res
 
 @app.route("/api/get_experiment_results",methods=["GET"])
@@ -142,8 +153,17 @@ def getExperimentResults():
     experimentname=request.args.get("experimentname",type=str)
     assert projectname is not None
     assert experimentname is not None
-    results=cp_reduce(projectname,experimentname)
-    res={"resultfiles":results.get()}
+    plot_filename="plot.html"
+    plot_s3_name=f"{projectname}/{experimentname}/{plot_filename}"
+    _results=cp_reduce(projectname,experimentname,plot_s3_name=plot_s3_name)
+    
+    res={"resultfiles":[
+        {
+            "filename":plot_filename,
+            "download":f"/download/{BUCKET_NAME}/{plot_s3_name}",
+            "display_src":f"/serve/{BUCKET_NAME}/{plot_s3_name}"
+        }
+    ]}
     return jsonify(res),Status.OK
 
 @app.route('/api/upload', methods=['POST'])
@@ -152,31 +172,57 @@ def uploadFile():
     if len(request.files)==0:
         return jsonify({"error":"no files provided"}),Status.BAD_REQUEST
 
+    # coordinate file
     coordinate_file=request.files.get("coordinate_file")
-    assert coordinate_file is not None
+    if coordinate_file is None:
+        return jsonify({"error":"no coordinate file provided"}),Status.BAD_REQUEST
+    
     coordinates=pd.read_csv(coordinate_file.stream)
 
+    # experiment metadata file
     experiment_file=request.files.get("experiment_file")
-    assert experiment_file is not None
+    if experiment_file is None:
+        return jsonify({"error":"no experiment file provided"}),Status.BAD_REQUEST
+    
     experiment=json.load(experiment_file.stream)
     experiment_name=Path(experiment["output_path"]).name
     experiment["experiment_name"]=experiment_name
 
+    # compound layout file
+    compound_layout_file=request.files.get("compound_layout_file")
+    if compound_layout_file is None:
+        return jsonify({"error":"no compound layout file provided"}),Status.BAD_REQUEST
+    
+    #compound_layout=pd.read_csv(compound_layout_file.stream)
+    project_name=experiment["project_name"]
+    experiment_name=experiment["experiment_name"]
+    assert compound_layout_file.filename is not None
+    compound_layout_s3_filename=f"{project_name}/{experiment_name}/{Path(compound_layout_file.filename).name}"
+    s3client.uploadFile(compound_layout_file,compound_layout_s3_filename)
+
+    # image files
+    image_files=request.files.getlist("image_files")
+    if len(image_files)==0:
+        return jsonify({"error":"no image files provided"}),Status.BAD_REQUEST
+    
     imageSets=mydb.insertExperimentMetadata(
         experiment,
         coordinates,
-        images=request.files.getlist("image_files"),
-        image_s3_bucketname=BUCKET_NAME
+        compound_layout_s3_filename,
+        images=image_files,
+        image_s3_bucketname=BUCKET_NAME,
     )
 
     imageFileList=[]
-    for setName,imageSet in imageSets.items():
+    for _setName,imageSet in imageSets.items():
         batch_id=mydb.getProcessingBatchID(experiment["project_name"],experiment_name)
 
         print(
             "registering batch with id",batch_id,
             "for experiment",experiment_name,
             "in project",experiment["project_name"],
+            "for well",imageSet[0].wellname,
+            "for site",imageSet[0].site,
             "with",len(imageSet),"images"
         )
         

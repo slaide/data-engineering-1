@@ -181,6 +181,7 @@ class Result_processingStatus(pyd.BaseModel):
     resultfiles:tp.Dict[str,pd.DataFrame]
     batch_information:tp.List[BatchStatusInformation]
     total_sites:int
+    num_registered_sites:int
     num_processed_sites:int
 
 class DB:
@@ -238,6 +239,7 @@ class DB:
                 Column("id",Integer,primary_key=True,nullable=False,autoincrement=True,unique=True),
                 Column("projectid",Integer,ForeignKey("projects.id",ondelete="cascade"),nullable=False),
                 Column("name",Text,nullable=False),
+                Column("compound_layout_path",Text,nullable=False),
                 Column("description",Text,nullable=True),
                 Column("plateid",Integer,ForeignKey("plates.id",ondelete="cascade"),nullable=False),
                 Column("microscopeid",Integer,ForeignKey("microscopes.id",ondelete="cascade"),nullable=False),
@@ -251,6 +253,7 @@ class DB:
                 Column("delta_z_um",Float,nullable=False),
                 Column("delta_t_h",Float,nullable=False),
             )
+
             """
                 all experiments
 
@@ -572,6 +575,7 @@ class DB:
     def insertExperimentMetadata(self,
         experiment:dict,
         coordinates:pd.DataFrame,
+        compound_layout_s3_filename:str,
         images:tp.List[FileStorage],
         image_s3_bucketname:str,
     )->tp.Dict[str,tp.List[ImageMetadata]]:
@@ -670,9 +674,13 @@ class DB:
                 # descriptions are currently not implemented in metadata files
                 # but would be nice to have at some point
                 "description":None,
+
+                "compound_layout_path":compound_layout_s3_filename,
+
                 "plateid":plate_id,
                 "microscopeid":microscope_id,
                 "objectiveid":objective_id,
+
                 "num_images_x":grid_num_x,
                 "num_images_y":grid_num_y,
                 "num_images_z":grid_num_z,
@@ -973,7 +981,10 @@ class DB:
             resultfiles={},
             total_sites=0,
             num_processed_sites=0,
+            num_registered_sites=0,
         )
+
+        registered_sites=set()
 
         # check if all sites in all wells have been processed
         batches=self.dbExec(f"select batchid from profile_results where experimentid={experiment_id};")
@@ -1030,6 +1041,8 @@ class DB:
                 filename=row["filename"]
                 res.wells[well][site]=1
 
+                registered_sites.add(site)
+
                 if get_merged_frames:
                     file=BytesIO()
 
@@ -1056,6 +1069,10 @@ class DB:
                         res.resultfiles[filename]=pd.concat([res.resultfiles[filename],df],axis=1)
     
 
+        # TODO currently does not work because a batch only registers its wells/sites after finishing processing
+        for site in registered_sites:
+            res.num_registered_sites+=1
+
         for well,sites in res.wells.items():
             for site,c in sites.items():
                 res.total_sites+=1
@@ -1072,6 +1089,15 @@ class DB:
             if res is not None:
                 print(table.name,res,sep="\n")
 
+    def getExperimentCompoundLayout(self,project_name:str,experiment_name:str)->str:
+        project_id=self.getProjectID(project_name)
+        experiment_id=self.getExperimentID(project_id,experiment_name)
+        res=self.dbExec(f"select compound_layout_path from experiments where projectid={project_id} and id={experiment_id};")
+        assert type(res)==list
+        assert len(res)==1, f"expected 1 result, got {len(res)}"
+        
+        return res[0][0]
+
     def getProjectID(self,project_name:str)->int:
         """
         get project id by project name
@@ -1083,7 +1109,7 @@ class DB:
         assert type(res)==list
     
         if len(res)==0:
-            raise ValueError(f"project {project_name} not found in database")
+            raise ValueError(f"project '{project_name}' not found in database")
         
         return res[0][0]
     
