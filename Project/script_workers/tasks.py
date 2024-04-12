@@ -1,6 +1,6 @@
 from celery import Celery
 import traceback as tb
-import os, io
+import os, io, signal, sys
 import subprocess as sp
 import typing as tp
 from pathlib import Path
@@ -29,6 +29,7 @@ def cp_map(
     experiment_name:str,
     plate_name:str,
     imageBatchID:int,
+    retry_attempt:int=0,
 ):
     """
         run cellprofiler on a batch of images
@@ -48,124 +49,192 @@ def cp_map(
         batchid=imageBatchID
     )
 
-    # download files to prepare for cellprofiler ingestion
-    cellprofilerInputFileListFilePath=Path("./cellprofilerinput/imagefilelist.txt")
-    local_files:tp.List[Path]=[]
-    with cellprofilerInputFileListFilePath.open("w+") as f:
-        for file in filelist:
-            assert type(file)==dict, f"{type(file)=} {file=}"
-            file=ObjectStorageFileReference(**file)
-
-            filename,s3path=file.filename,file.s3path
-
-            local_image_filename:Path=Path("./cellprofilerinput")/filename
-            s3bucketname, s3path = s3path.split("/",1)
-            # download image from s3
-            s3client.downloadFile(
-                object_name=s3path, 
-                local_filename=str(local_image_filename.absolute())
-            )
-            # write local image file path to cellprofiler input file
-            f.write(f"{str(local_image_filename.absolute())}\n")
-            # save image file path for later deletion
-            local_files.append(local_image_filename)
-
     experimentid=mydb.getExperimentID(project_name,experiment_name)
 
-    # update database entry for processing batch with start time and status=processing
-    mydb.dbExec(f"""
-        UPDATE profile_results
-        SET start_time=CURRENT_TIMESTAMP,
-            status='processing images'
-        WHERE experimentid={experimentid}
-        AND batchid={imageBatchID};
-    """)
+    # Save the original signal handler
+    original_handler = signal.getsignal(signal.SIGTERM)
 
-    # then actually run cellprofiler (and ignore exit code, for now)
-    cellprofiler_shell_command="venv/bin/python3 -m cellprofiler --run-headless --run --project=cellprofilerinput/morphology_pipeline.cpproj --file-list=cellprofilerinput/imagefilelist.txt --image-directory=cellprofilerinput/ --output-directory=cellprofileroutput/ --conserve-memory True"
-    cp_cmd=sp.run(cellprofiler_shell_command,shell=True)
-    if cp_cmd.returncode!=0:
-        raise ValueError(f"cellprofiler command failed with exit code {cp_cmd.returncode}")
+    # Define the custom signal handler inside the function to access `batch_id`
+    def shutdown_gracefully(signum, frame):
+        print(f"warning - SIGTERM received during the processing of batch {imageBatchID}.")
 
-    # update database entry for processing batch with status=uploading
-    mydb.dbExec(f"""
-        UPDATE profile_results
-        SET status='uploading results to storage'
-        WHERE experimentid={experimentid}
-        AND batchid={imageBatchID};
-    """)
+        # update database entry for processing batch with status=terminated, and end_time
+        mydb.dbExec(f"""
+            UPDATE profile_results
+            SET end_time=CURRENT_TIMESTAMP,
+                status='terminated'
+            WHERE experimentid={experimentid}
+            AND batchid={imageBatchID};
+        """)
 
-    # delete all local files again
-    for local_image_filename in local_files:
-        local_image_filename.unlink()
-    cellprofilerInputFileListFilePath.unlink()
+        # Call the original handler after custom handling, pass the signal and frame
+        if callable(original_handler):
+            original_handler(signum, frame)
+        else:
+            print("warning - during SIGTERM handling, previous signal handler was not callable. Exiting instead.")
+            sys.exit(1)
 
-    # output files are the following
-    outputFilepaths=[
-        "cellprofileroutput/Experiment.csv",
-        "cellprofileroutput/Image.csv",
-        "cellprofileroutput/cytoplasm.csv",
-        "cellprofileroutput/nucleus.csv",
-    ]
+    # Set the new signal handler
+    signal.signal(signal.SIGTERM, shutdown_gracefully)
 
-    ret_filepaths:tp.List[ObjectStorageFileReference]=[]
-    well_site_list:tp.List[WellSite]=[]
-    for file in outputFilepaths:
-        file_csv=Path(file)
-        assert file_csv.exists(), str(file_csv)
+    try:
+        # download files to prepare for cellprofiler ingestion
+        cellprofilerInputFileListFilePath=Path("./cellprofilerinput/imagefilelist.txt")
+        local_files:tp.List[Path]=[]
+        with cellprofilerInputFileListFilePath.open("w+") as f:
+            for file in filelist:
+                assert type(file)==dict, f"{type(file)=} {file=}"
+                file=ObjectStorageFileReference(**file)
 
-        # convert file to parquet using pandas before upload
-        df=pd.read_csv(file_csv)
-        file_parquet=file_csv.with_suffix(".parquet")
-        df.to_parquet(file_parquet)
+                filename,s3path=file.filename,file.s3path
 
-        s3Filename = f"{project_name}/{plate_name}/{imageBatchID}/{file_parquet.name}"
-        s3client.uploadFile(
-            file=str(file_parquet),
-            object_name=s3Filename
+                local_image_filename:Path=Path("./cellprofilerinput")/filename
+                s3bucketname, s3path = s3path.split("/",1)
+                # download image from s3
+                s3client.downloadFile(
+                    object_name=s3path, 
+                    local_filename=str(local_image_filename.absolute())
+                )
+                # write local image file path to cellprofiler input file
+                f.write(f"{str(local_image_filename.absolute())}\n")
+                # save image file path for later deletion
+                local_files.append(local_image_filename)
+
+        def deleteLocalFiles():
+            """ delete all local files again """
+            for local_image_filename in local_files:
+                local_image_filename.unlink()
+            cellprofilerInputFileListFilePath.unlink()
+
+        # update database entry for processing batch with start time and status=processing
+        mydb.dbExec(f"""
+            UPDATE profile_results
+            SET start_time=CURRENT_TIMESTAMP,
+                status='processing images'
+            WHERE experimentid={experimentid}
+            AND batchid={imageBatchID};
+        """)
+
+        # then actually run cellprofiler (and ignore exit code, for now)
+        cellprofiler_shell_command="venv/bin/python3 -m cellprofiler --run-headless --run --project=cellprofilerinput/morphology_pipeline.cpproj --file-list=cellprofilerinput/imagefilelist.txt --image-directory=cellprofilerinput/ --output-directory=cellprofileroutput/ --conserve-memory True"
+        cp_cmd=sp.run(cellprofiler_shell_command,shell=True)
+        if cp_cmd.returncode!=0:
+            # likely indicates OOM error
+            if cp_cmd.returncode==137:
+                error_status=f"failed.OOM({retry_attempt})"
+                print(f"cellprofiler error - {error_status} -- OOM error, retrying for the {retry_attempt}th time")
+                do_attempt_retry=True
+            else:
+                error_status=f"failed.{cp_cmd.returncode}"
+                print(f"cellprofiler error - {error_status}")
+                do_attempt_retry=False
+
+            # set status of batch to failed.exitcode (for tracking purposes)
+            # set end_time to current time (to indicate that this batch is done, regardless of success or failure)
+            mydb.dbExec(f"""
+                UPDATE profile_results
+                SET end_time=CURRENT_TIMESTAMP,
+                    status='{error_status}'
+                WHERE experimentid={experimentid}
+                AND batchid={imageBatchID};
+            """)
+
+            deleteLocalFiles()
+
+            if do_attempt_retry:
+                # generate new batch id (do not overwrite existing batch id, which contains error information in its status)
+                new_batch_id=mydb.getProcessingBatchID(project_name,experiment_name)
+                # retry with new batch id
+                return cp_map(
+                    filelist=filelist,
+                    project_name=project_name,
+                    experiment_name=experiment_name,
+                    plate_name=plate_name,
+                    imageBatchID=new_batch_id,
+                    retry_attempt=retry_attempt+1
+                )
+            else:
+                raise ValueError(f"cellprofiler command failed with exit code {cp_cmd.returncode}")
+
+        deleteLocalFiles()
+
+        # update database entry for processing batch with status=uploading
+        mydb.dbExec(f"""
+            UPDATE profile_results
+            SET status='uploading results to storage'
+            WHERE experimentid={experimentid}
+            AND batchid={imageBatchID};
+        """)
+
+        # output files are the following
+        outputFilepaths=[
+            "cellprofileroutput/Experiment.csv",
+            "cellprofileroutput/Image.csv",
+            "cellprofileroutput/cytoplasm.csv",
+            "cellprofileroutput/nucleus.csv",
+        ]
+
+        ret_filepaths:tp.List[ObjectStorageFileReference]=[]
+        well_site_list:tp.List[WellSite]=[]
+        for file in outputFilepaths:
+            file_csv=Path(file)
+            assert file_csv.exists(), str(file_csv)
+
+            # convert file to parquet using pandas before upload
+            df=pd.read_csv(file_csv)
+            file_parquet=file_csv.with_suffix(".parquet")
+            df.to_parquet(file_parquet)
+
+            s3Filename = f"{project_name}/{plate_name}/{imageBatchID}/{file_parquet.name}"
+            s3client.uploadFile(
+                file=str(file_parquet),
+                object_name=s3Filename
+            )
+
+            # delete both local files
+            file_csv.unlink()
+            file_parquet.unlink()
+
+            ret_filepaths.append(ObjectStorageFileReference(
+                filename=file_parquet.name,
+                s3path=s3Filename,
+            ))
+
+            target_colname="FileName_nucleus"
+            if target_colname in df.columns:
+                # go through each row in target column, split by underscore, first segment is well, second is site, rest is ignored
+                for row in df[target_colname]:
+                    # TODO this should be handled better! just splitting is not very stable
+                    well,site,_ignore=row.split("_",2)
+                    site=int(site[1:]) # strip leading 's', and ensure the rest is an integer
+                    well_site_list.append(WellSite(well=well,site=site))
+
+        res=Result_cp_map(
+            resultfiles=ret_filepaths,
+            wells=well_site_list
         )
 
-        # delete both local files
-        file_csv.unlink()
-        file_parquet.unlink()
+        # write result file information back to db
 
-        ret_filepaths.append(ObjectStorageFileReference(
-            filename=file_parquet.name,
-            s3path=s3Filename,
-        ))
+        mydb.insertProfileResultBatch(
+            project_name,
+            experiment_name=experiment_name,
+            batchid=imageBatchID,
+            result_file_paths=res.resultfiles,
+            well_site_list=res.wells,
+        )
 
-        target_colname="FileName_nucleus"
-        if target_colname in df.columns:
-            # go through each row in target column, split by underscore, first segment is well, second is site, rest is ignored
-            for row in df[target_colname]:
-                # TODO this should be handled better! just splitting is not very stable
-                well,site,_ignore=row.split("_",2)
-                site=int(site[1:]) # strip leading 's', and ensure the rest is an integer
-                well_site_list.append(WellSite(well=well,site=site))
-
-    res=Result_cp_map(
-        resultfiles=ret_filepaths,
-        wells=well_site_list
-    )
-
-    # write result file information back to db
-
-    mydb.insertProfileResultBatch(
-        project_name,
-        experiment_name=experiment_name,
-        batchid=imageBatchID,
-        result_file_paths=res.resultfiles,
-        well_site_list=res.wells,
-    )
-
-    # update database entry for processing batch with end time and status=done
-    mydb.dbExec(f"""
-        UPDATE profile_results
-        SET end_time=CURRENT_TIMESTAMP,
-            status='done'
-        WHERE experimentid={experimentid}
-        AND batchid={imageBatchID};
-    """)
+        # update database entry for processing batch with end time and status=done
+        mydb.dbExec(f"""
+            UPDATE profile_results
+            SET end_time=CURRENT_TIMESTAMP,
+                status='done'
+            WHERE experimentid={experimentid}
+            AND batchid={imageBatchID};
+        """)
+    finally:
+        # restore original signal handler
+        signal.signal(signal.SIGTERM, original_handler)
 
 @tasks.task(name="cp_reduce",queue="reduce_queue")
 def cp_reduce(
