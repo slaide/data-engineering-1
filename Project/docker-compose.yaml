@@ -2,9 +2,10 @@ version: "3.8"
 
 services:
   s3:
-    image: localstack/localstack:s3-latest
-    restart: always
+    image: localhost:5000/s3:latest
     deploy:
+      restart_policy:
+        condition: on-failure
       resources:
         limits:
           cpus: '1'
@@ -21,9 +22,10 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock"
 
   db:
-    image: mariadb:11.3
-    restart: always
+    image: localhost:5000/db:latest
     deploy:
+      restart_policy:
+        condition: on-failure
       resources:
         limits:
           cpus: '1'
@@ -35,11 +37,10 @@ services:
       - MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1
 
   taskq:
-    build:
-      context: rabbitmq
-      dockerfile: rabbitmq.Dockerfile
-    restart: always
+    image: localhost:5000/taskq:latest
     deploy:
+      restart_policy:
+        condition: on-failure
       resources:
         limits:
           cpus: '1'
@@ -52,11 +53,10 @@ services:
       RABBITMQ_DEFAULT_PASS: "guestpw"
 
   webfrontend:
-    build:
-      context: web-frontend
-      dockerfile: webserver.Dockerfile
-    restart: always
+    image: localhost:5000/webfrontend:latest
     deploy:
+      restart_policy:
+        condition: on-failure
       resources:
         limits:
           cpus: '1'
@@ -80,12 +80,14 @@ services:
       S3_BUCKET_NAME: mybucket
 
   cpmapper:
-    build:
-      context: script_workers
-      dockerfile: cpmapper.Dockerfile
-    restart: always
+    image: localhost:5000/cpmapper:latest
+    # ensure that the container is stopped gracefully (this signal may be caught at runtime)
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
     deploy:
       replicas: 3
+      restart_policy:
+        condition: on-failure
       resources:
         limits:
           cpus: '1'
@@ -106,11 +108,10 @@ services:
       S3_BUCKET_NAME: mybucket
 
   cpreducer:
-    build:
-      context: script_workers
-      dockerfile: cpreducer.Dockerfile
-    restart: always
+    image: localhost:5000/cpreducer:latest
     deploy:
+      restart_policy:
+        condition: on-failure
       resources:
         limits:
           cpus: '1'
@@ -132,4 +133,3 @@ services:
 
 networks:
   intranet:
-
