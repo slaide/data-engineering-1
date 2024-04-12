@@ -6,22 +6,20 @@
 docker swarm init
 
 # should be disabled during development because it triggers an image rebuild
-if true; then
+if false; then
 rm -rf dbi/build
 rm -rf cell-profile/build
 
-rm -rf web-frontend/dbi
-cp -r dbi web-frontend/dbi
+rm -rf web-frontend/dbi_and_cell-profile
+mkdir web-frontend/dbi_and_cell-profile
+cp -r dbi web-frontend/dbi_and_cell-profile/dbi
+cp -r cell-profile web-frontend/dbi_and_cell-profile/cell-profile
 
-rm -rf script_workers/dbi
-cp -r dbi script_workers/dbi
-
-rm -rf web-frontend/cell-profile
-cp -r cell-profile web-frontend/cell-profile
-
-rm -rf script_workers/cell-profile
-cp -r cell-profile script_workers/cell-profile
-end
+rm -rf script_workers/dbi_and_cell-profile
+mkdir script_workers/dbi_and_cell-profile
+cp -r dbi script_workers/dbi_and_cell-profile/dbi
+cp -r cell-profile script_workers/dbi_and_cell-profile/cell-profile
+fi
 
 DOCKER_CACHE_FLAG="" # --no-cache"
 
@@ -76,18 +74,4 @@ docker node inspect self --pretty # replace self with node ip to inspect another
 # scale service
 if false; then
 docker service scale myproject_cpmapper=6
-fi
-
-if false; then
-# when done:
-
-# 1. bring down stack
-docker stack rm myproject
-
-# 2. bring down registry
-docker service rm registry
-
-# 3. leave swarm
-docker swarm leave --force
-
 fi

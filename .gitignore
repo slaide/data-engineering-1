@@ -1,11 +1,13 @@
 .DS_Store
 .ipynb_checkpoints
-/Project/volume
 *.egg-info
 __pycache__
 **/build/lib
+Project/volume
+Project/data
 Project/script_workers/dbi
 Project/web-frontend/dbi
 Project/script_workers/cell-profile
 Project/web-frontend/cell-profile
-Project/data
+Project/script_workers/dbi_and_cell-profile
+Project/web-frontend/dbi_and_cell-profile
